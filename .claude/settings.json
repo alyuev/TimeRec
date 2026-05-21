@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(*)",
+      "Bash(*)",
+      "Read(//c/lazarus/**)"
+    ]
+  }
+}

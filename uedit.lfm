@@ -1,0 +1,96 @@
+object EditForm: TEditForm
+  Left = 300
+  Top = 250
+  Width = 720
+  Height = 440
+  Caption = 'TimeRec - '#1056#1077#1076#1072#1082#1090#1080#1088#1086#1074#1072#1085#1080#1077' '#1089#1086#1073#1099#1090#1080#1081
+  ClientHeight = 440
+  ClientWidth = 720
+  Position = poScreenCenter
+  OnShow = FormShow
+  LCLVersion = '4.2.0.0'
+  object pnlTop: TPanel
+    Left = 0
+    Top = 0
+    Width = 720
+    Height = 36
+    Align = alTop
+    BevelOuter = bvNone
+    ClientHeight = 36
+    ClientWidth = 720
+    TabOrder = 0
+    object lblFile: TLabel
+      Left = 8
+      Top = 11
+      Width = 32
+      Height = 13
+      Caption = #1060#1072#1081#1083':'
+    end
+    object cbFile: TComboBox
+      Left = 48
+      Top = 7
+      Width = 180
+      Height = 21
+      Style = csDropDownList
+      ItemHeight = 13
+      TabOrder = 0
+      OnChange = cbFileChange
+    end
+    object btnReload: TButton
+      Left = 234
+      Top = 6
+      Width = 80
+      Height = 24
+      Caption = #1054#1073#1085#1086#1074#1080#1090#1100
+      TabOrder = 1
+      OnClick = btnReloadClick
+    end
+    object btnAdd: TButton
+      Left = 320
+      Top = 6
+      Width = 110
+      Height = 24
+      Caption = #1044#1086#1073#1072#1074#1080#1090#1100' '#1089#1090#1088#1086#1082#1091
+      TabOrder = 2
+      OnClick = btnAddClick
+    end
+    object btnDel: TButton
+      Left = 436
+      Top = 6
+      Width = 110
+      Height = 24
+      Caption = #1059#1076#1072#1083#1080#1090#1100' '#1089#1090#1088#1086#1082#1091
+      TabOrder = 3
+      OnClick = btnDelClick
+    end
+    object btnSave: TButton
+      Left = 620
+      Top = 6
+      Width = 90
+      Height = 24
+      Caption = #1057#1086#1093#1088#1072#1085#1080#1090#1100
+      TabOrder = 4
+      OnClick = btnSaveClick
+    end
+  end
+  object sg: TStringGrid
+    Left = 0
+    Top = 36
+    Width = 720
+    Height = 404
+    Align = alClient
+    ColCount = 4
+    DefaultRowHeight = 20
+    FixedCols = 0
+    Options = [goFixedVertLine, goFixedHorzLine, goVertLine, goHorzLine, goRangeSelect, goEditing, goTabs, goSmoothScroll, goFixedRowNumbering]
+    RowCount = 1
+    TabOrder = 1
+    OnEditingDone = sgEditingDone
+    ColWidths = (
+      300
+      150
+      150
+      100
+    )
+  end
+end

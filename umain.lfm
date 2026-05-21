@@ -1,0 +1,104 @@
+object MainForm: TMainForm
+  Left = 200
+  Top = 200
+  Width = 304
+  Height = 32
+  BorderStyle = bsNone
+  Caption = 'TimeRec'
+  ClientHeight = 32
+  ClientWidth = 304
+  Color = clBtnFace
+  Font.Height = -11
+  Font.Name = 'Tahoma'
+  FormStyle = fsStayOnTop
+  OnClose = FormClose
+  OnCreate = FormCreate
+  OnMouseDown = FormMouseDown
+  OnResize = FormResize
+  PopupMenu = PopupMenu1
+  Position = poDesigned
+  LCLVersion = '4.2.0.0'
+  object lblClock: TLabel
+    Left = 4
+    Top = 2
+    Width = 46
+    Height = 13
+    Caption = '00:00:00'
+    OnMouseDown = FormMouseDown
+  end
+  object lblElapsed: TLabel
+    Left = 4
+    Top = 16
+    Width = 46
+    Height = 13
+    Caption = '00:00:00'
+    Font.Color = clNavy
+    Font.Height = -11
+    Font.Style = [fsBold]
+    ParentFont = False
+    OnMouseDown = FormMouseDown
+  end
+  object cbTask: TComboBox
+    Left = 54
+    Top = 5
+    Width = 190
+    Height = 21
+    ItemHeight = 13
+    TabOrder = 0
+    OnChange = cbTaskChange
+    OnDropDown = cbTaskDropDown
+    OnKeyDown = cbTaskKeyDown
+    OnSelect = cbTaskSelect
+  end
+  object btnStartStop: TButton
+    Left = 248
+    Top = 4
+    Width = 52
+    Height = 24
+    Caption = 'Start'
+    TabOrder = 1
+    OnClick = btnStartStopClick
+  end
+  object Timer1: TTimer
+    Interval = 500
+    OnTimer = Timer1Timer
+    Left = 272
+    Top = 8
+  end
+  object PopupMenu1: TPopupMenu
+    Left = 8
+    Top = 8
+    object miStats: TMenuItem
+      Caption = #1057#1090#1072#1090#1080#1089#1090#1080#1082#1072
+      OnClick = miStatsClick
+    end
+    object miEdit: TMenuItem
+      Caption = #1056#1077#1076#1072#1082#1090#1080#1088#1086#1074#1072#1085#1080#1077' '#1089#1086#1073#1099#1090#1080#1081
+      OnClick = miEditClick
+    end
+    object miHideFromTaskBar: TMenuItem
+      Caption = #1057#1082#1088#1099#1090#1100' '#1080#1079' '#1087#1072#1085#1077#1083#1080' '#1079#1072#1076#1072#1095
+      AutoCheck = True
+      OnClick = miHideFromTaskBarClick
+    end
+    object miTopMost: TMenuItem
+      Caption = #1055#1086#1074#1077#1088#1093' '#1074#1089#1077#1093' '#1086#1082#1086#1085
+      Checked = True
+      AutoCheck = True
+      OnClick = miTopMostClick
+    end
+    object miSep1: TMenuItem
+      Caption = '-'
+    end
+    object miExit: TMenuItem
+      Caption = #1042#1099#1093#1086#1076
+      OnClick = miExitClick
+    end
+  end
+  object TrayIcon1: TTrayIcon
+    PopUpMenu = PopupMenu1
+    OnDblClick = TrayIcon1DblClick
+    Left = 56
+    Top = 8
+  end
+end
