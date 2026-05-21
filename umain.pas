@@ -260,6 +260,24 @@ begin
         // Interior: let LCL handle (right-click popup, drag via OnMouseDown).
       end;
 
+    WM_SETCURSOR:
+      begin
+        // LOWORD(lParam) holds the hit-test code from the most recent
+        // WM_NCHITTEST. LCL's default handler resets the cursor to arrow,
+        // so we must claim ownership for edge zones.
+        HT := Integer(lParam) and $FFFF;
+        case HT of
+          HTLEFT, HTRIGHT:
+            begin SetCursor(LoadCursor(0, IDC_SIZEWE));   Exit(1); end;
+          HTTOP, HTBOTTOM:
+            begin SetCursor(LoadCursor(0, IDC_SIZENS));   Exit(1); end;
+          HTTOPLEFT, HTBOTTOMRIGHT:
+            begin SetCursor(LoadCursor(0, IDC_SIZENWSE)); Exit(1); end;
+          HTTOPRIGHT, HTBOTTOMLEFT:
+            begin SetCursor(LoadCursor(0, IDC_SIZENESW)); Exit(1); end;
+        end;
+      end;
+
     WM_NCLBUTTONDOWN:
       begin
         HT := Integer(wParam);
