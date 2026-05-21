@@ -15,6 +15,7 @@ object MainForm: TMainForm
   OnCreate = FormCreate
   OnMouseDown = FormMouseDown
   OnResize = FormResize
+  OnShow = FormShow
   PopupMenu = PopupMenu1
   Position = poDesigned
   LCLVersion = '4.2.0.0'
@@ -63,6 +64,13 @@ object MainForm: TMainForm
     Interval = 500
     OnTimer = Timer1Timer
     Left = 272
+    Top = 8
+  end
+  object DeselTimer: TTimer
+    Enabled = False
+    Interval = 100
+    OnTimer = DeselTimerTimer
+    Left = 200
     Top = 8
   end
   object PopupMenu1: TPopupMenu

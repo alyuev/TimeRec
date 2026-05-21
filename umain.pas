@@ -28,6 +28,7 @@ type
     miExit: TMenuItem;
     PopupMenu1: TPopupMenu;
     Timer1: TTimer;
+    DeselTimer: TTimer;
     TrayIcon1: TTrayIcon;
     procedure btnStartStopClick(Sender: TObject);
     procedure cbTaskChange(Sender: TObject);
@@ -39,6 +40,7 @@ type
     procedure FormMouseDown(Sender: TObject; Button: TMouseButton;
       Shift: TShiftState; X, Y: Integer);
     procedure FormResize(Sender: TObject);
+    procedure FormShow(Sender: TObject);
     procedure miEditClick(Sender: TObject);
     procedure miExitClick(Sender: TObject);
     procedure miHideFromTaskBarClick(Sender: TObject);
@@ -46,6 +48,7 @@ type
     procedure miStatsClick(Sender: TObject);
     procedure miTopMostClick(Sender: TObject);
     procedure Timer1Timer(Sender: TObject);
+    procedure DeselTimerTimer(Sender: TObject);
     procedure TrayIcon1DblClick(Sender: TObject);
   private
     FRunning: Boolean;
@@ -59,6 +62,8 @@ type
     FProgrammaticDrop: Boolean;
     FItemsAreFiltered: Boolean;
     FJustSelected: Boolean;
+    FJustPickedFromList: Boolean;
+    FHighlightedIdx: Integer;
     FCurrentMarker: string;
     FLastAlive: TDateTime;
     FOpacity: Integer;
@@ -79,6 +84,10 @@ type
     procedure ApplyHideFromTaskBar;
     procedure ApplyTopMost;
     procedure ApplyOpacity(APercent: Integer);
+    procedure DeselectCombo(Data: PtrInt);
+    procedure ClearComboSelection(Data: PtrInt);
+    procedure DeferredStartFromEnter(Data: PtrInt);
+    procedure DeferredFocusStart(Data: PtrInt);
   protected
     procedure WndProc(var Message: TLMessage); override;
   public
@@ -110,6 +119,7 @@ begin
 end;
 
 procedure InstallSubclass(h: HWND); forward;
+procedure SubclassComboEdit(ComboHwnd: HWND); forward;
 
 procedure TMainForm.FormCreate(Sender: TObject);
 var
@@ -125,6 +135,7 @@ begin
   FAllTasks.Sorted := False;
   FRunning := False;
   FOpacity := 100;
+  FHighlightedIdx := -1;
   LoadTaskHistory;
   RecoverOrphanedTask;
   LoadConfig;
@@ -185,6 +196,15 @@ begin
   end;
 end;
 
+procedure TMainForm.FormShow(Sender: TObject);
+begin
+  // By OnShow the combo's inner Edit handle exists. Subclass it now so
+  // arrow/Enter handling is in place before any user input. The helper is
+  // idempotent (no-op if already installed).
+  if cbTask.HandleAllocated then
+    SubclassComboEdit(cbTask.Handle);
+end;
+
 procedure TMainForm.FormResize(Sender: TObject);
 const
   BaseH = 32;
@@ -205,6 +225,9 @@ begin
   lblElapsed.SetBounds(Round(4 * S), Round(16 * S), Round(46 * S), Round(13 * S));
   cbTask.SetBounds(Round(54 * S),  Round(5 * S), Round(190 * S), Round(21 * S));
   btnStartStop.SetBounds(Round(248 * S), Round(4 * S), Round(52 * S), Round(24 * S));
+  // Resizing the combo can leave its edit with a selection highlight —
+  // schedule a deselect after the event chain settles.
+  Application.QueueAsyncCall(@DeselectCombo, 0);
 end;
 
 procedure TMainForm.Timer1Timer(Sender: TObject);
@@ -231,6 +254,116 @@ end;
 var
   GOldWndProc: Pointer = nil;
   GMainHwnd: HWND = 0;
+  GComboEdit: HWND = 0;
+  GOldEditWndProc: Pointer = nil;
+  GSuppressEditSel: Boolean = False;
+
+const
+  EM_SETSEL_ = $00B1;
+  LB_GETCURSEL_  = $0188;
+  LB_SETCURSEL_  = $0186;
+  LB_GETCOUNT_   = $018B;
+  CB_GETDROPPEDSTATE_ = $0157;
+  CB_SETCURSEL_       = $014E;
+  CB_SHOWDROPDOWN_    = $014F;
+
+  WM_APP_FOCUS_START  = $8000 + 1;
+
+var
+  GHighlightedIdx: Integer = -1;
+
+type
+  TComboBoxInfo_ = packed record
+    cbSize: DWORD;
+    rcItem, rcButton: TRect;
+    stateButton: DWORD;
+    hwndCombo, hwndItem, hwndList: HWND;
+  end;
+
+function GetComboBoxInfoApi(hwndCombo: HWND; var Info: TComboBoxInfo_): BOOL;
+  stdcall; external 'user32.dll' name 'GetComboBoxInfo';
+
+function EditSubProc(h: HWND; uMsg: UINT; wParam: WPARAM;
+  lParam: LPARAM): LRESULT; stdcall;
+var
+  cbi: TComboBoxInfo_;
+  Combo: HWND;
+  cur, cnt, newIdx: Integer;
+begin
+  if uMsg = WM_KEYDOWN then
+  begin
+    Combo := GetParent(h);
+    if Combo <> 0 then
+    case wParam of
+      VK_DOWN, VK_UP:
+        if SendMessage(Combo, CB_GETDROPPEDSTATE_, 0, 0) <> 0 then
+        begin
+          cbi.cbSize := SizeOf(cbi);
+          if GetComboBoxInfoApi(Combo, cbi) and (cbi.hwndList <> 0) then
+          begin
+            cur := SendMessage(cbi.hwndList, LB_GETCURSEL_, 0, 0);
+            cnt := SendMessage(cbi.hwndList, LB_GETCOUNT_,  0, 0);
+            if wParam = VK_DOWN then newIdx := cur + 1
+                                else newIdx := cur - 1;
+            if newIdx < 0    then newIdx := 0;
+            if newIdx >= cnt then newIdx := cnt - 1;
+            if (cnt > 0) and (newIdx <> cur) then
+            begin
+              SendMessage(cbi.hwndList, LB_SETCURSEL_, newIdx, 0);
+              GHighlightedIdx := newIdx;
+            end;
+          end;
+          Exit(0); // swallow — don't let default copy item text into edit
+        end;
+      VK_RETURN:
+        if SendMessage(Combo, CB_GETDROPPEDSTATE_, 0, 0) <> 0 then
+        begin
+          if GHighlightedIdx >= 0 then
+          begin
+            SendMessage(Combo, CB_SETCURSEL_, GHighlightedIdx, 0);
+            GHighlightedIdx := -1;
+          end;
+          SendMessage(Combo, CB_SHOWDROPDOWN_, 0, 0);
+          // Move focus to Start button — deferred so Enter doesn't click it
+          if GMainHwnd <> 0 then
+            PostMessage(GMainHwnd, WM_APP_FOCUS_START, 0, 0);
+          Exit(0);
+        end;
+    end;
+  end;
+  if (uMsg = EM_SETSEL_) and GSuppressEditSel and (wParam <> lParam) then
+  begin
+    Result := CallWindowProc(GOldEditWndProc, h, uMsg, 0, 0);
+    Exit;
+  end;
+  Result := CallWindowProc(GOldEditWndProc, h, uMsg, wParam, lParam);
+end;
+
+var
+  GFoundEdit: HWND = 0;
+
+function FindEditEnumProc(h: HWND; l: LPARAM): BOOL; stdcall;
+var
+  sb: array[0..31] of Char;
+begin
+  Result := True;
+  if GetClassName(h, sb, SizeOf(sb)) > 0 then
+    if (StrComp(sb, 'Edit') = 0) or (StrComp(sb, 'EDIT') = 0) then
+    begin
+      GFoundEdit := h;
+      Result := False;
+    end;
+end;
+
+procedure SubclassComboEdit(ComboHwnd: HWND);
+begin
+  GFoundEdit := 0;
+  EnumChildWindows(ComboHwnd, @FindEditEnumProc, 0);
+  if (GFoundEdit = 0) or (GComboEdit = GFoundEdit) then Exit;
+  GComboEdit := GFoundEdit;
+  GOldEditWndProc := Pointer(GetWindowLongPtr(GComboEdit, GWL_WNDPROC));
+  SetWindowLongPtr(GComboEdit, GWL_WNDPROC, PtrInt(@EditSubProc));
+end;
 
 function HTCodeFromEdges(L, R, T, B: Boolean): Integer;
 begin
@@ -356,6 +489,12 @@ end;
 
 procedure TMainForm.WndProc(var Message: TLMessage);
 begin
+  // Custom message from edit subclass: focus the Start button.
+  if Message.Msg = WM_APP_FOCUS_START then
+  begin
+    if btnStartStop.CanFocus then btnStartStop.SetFocus;
+    Exit;
+  end;
   // Top-most enforcement is the only thing we still need at LCL level —
   // NC sizing and hit-testing are handled by the Win32 subclass above.
   if (Message.Msg = LM_WINDOWPOSCHANGING) and miTopMost.Checked then
@@ -505,6 +644,10 @@ begin
      and (cbTask.Items[cbTask.ItemIndex] = cbTask.Text) then
   begin
     FJustSelected := False;
+    // Arrow-key navigation in the open dropdown also lands here and the
+    // combobox auto-selects the new text in the edit — clear it without
+    // moving focus, so the user can keep navigating.
+    Application.QueueAsyncCall(@ClearComboSelection, 0);
     Exit;
   end;
   if FJustSelected then
@@ -521,12 +664,52 @@ end;
 procedure TMainForm.cbTaskSelect(Sender: TObject);
 begin
   FJustSelected := True;
+  FJustPickedFromList := True;
+  // The blue highlight is just the focused edit's selection rendering —
+  // moving focus to the Start button hides it instantly. Use a timer with
+  // 100 ms delay so we run AFTER Windows finishes restoring focus to the
+  // combo's edit at the end of its CBN_SELCHANGE sequence.
+  DeselTimer.Enabled := False;
+  DeselTimer.Enabled := True;
+end;
+
+procedure TMainForm.DeselTimerTimer(Sender: TObject);
+begin
+  DeselTimer.Enabled := False;
+  DeselectCombo(0);
+end;
+
+procedure TMainForm.DeselectCombo(Data: PtrInt);
+const
+  CB_SETEDITSEL = $0142;
+begin
+  // After dropdown selection: clear selection AND move focus off so the
+  // edit no longer paints the highlight.
+  if cbTask.HandleAllocated then
+    SendMessage(cbTask.Handle, CB_SETEDITSEL, 0, 0);
+  if btnStartStop.CanFocus then
+    btnStartStop.SetFocus;
+end;
+
+procedure TMainForm.ClearComboSelection(Data: PtrInt);
+const
+  CB_SETEDITSEL = $0142;
+  L = $FFFFFFFF;
+begin
+  // Clear the edit selection without moving focus — used during arrow-key
+  // navigation in the open dropdown. lParam = -1 removes the selection.
+  if cbTask.HandleAllocated then
+    SendMessage(cbTask.Handle, CB_SETEDITSEL, 0, L);
 end;
 
 procedure TMainForm.cbTaskDropDown(Sender: TObject);
 begin
-  // User clicked the dropdown arrow: always show the full list.
-  // Programmatic dropdowns (from filter) set FProgrammaticDrop first.
+  // Reset highlight tracking for the new dropdown session
+  GHighlightedIdx := -1;
+  FHighlightedIdx := -1;
+  // Lazy-subclass the inner Edit on first dropdown — it exists by now.
+  if (GComboEdit = 0) and cbTask.HandleAllocated then
+    SubclassComboEdit(cbTask.Handle);
   if FProgrammaticDrop then
   begin
     FProgrammaticDrop := False;
@@ -535,13 +718,68 @@ begin
   RestoreFullList;
 end;
 
+type
+  TComboBoxInfo = packed record
+    cbSize: DWORD;
+    rcItem: TRect;
+    rcButton: TRect;
+    stateButton: DWORD;
+    hwndCombo: HWND;
+    hwndItem: HWND;
+    hwndList: HWND;
+  end;
+
+function GetComboBoxInfo(hwndCombo: HWND; var Info: TComboBoxInfo): BOOL;
+  stdcall; external 'user32.dll' name 'GetComboBoxInfo';
+
+const
+  LB_GETCURSEL = $0188;
+  LB_SETCURSEL = $0186;
+  LB_GETCOUNT  = $018B;
+  CB_SETCURSEL = $014E;
+  CB_GETDROPPEDSTATE = $0157;
+
+function ComboDroppedDown(Combo: HWND): Boolean;
+begin
+  Result := SendMessage(Combo, CB_GETDROPPEDSTATE, 0, 0) <> 0;
+end;
+
 procedure TMainForm.cbTaskKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
 begin
-  if Key = VK_RETURN then
+  // Arrow + Enter handling lives in the Win32 edit subclass (EditSubProc).
+  // LCL OnKeyDown doesn't reliably fire for arrow keys inside the combo's
+  // edit when the dropdown is open, so we hook at the Win32 level.
+end;
+
+procedure TMainForm.DeferredFocusStart(Data: PtrInt);
+begin
+  if btnStartStop.CanFocus then
+    btnStartStop.SetFocus;
+end;
+
+procedure TMainForm.DeferredStartFromEnter(Data: PtrInt);
+var
+  cbi: TComboBoxInfo;
+  idx: Integer;
+begin
+  // Enter in open dropdown: commit highlighted listbox item to combo and
+  // close — don't start the timer (the user is just picking).
+  if ComboDroppedDown(cbTask.Handle) then
   begin
-    Key := 0;
-    btnStartStopClick(nil);
+    cbi.cbSize := SizeOf(cbi);
+    if GetComboBoxInfo(cbTask.Handle, cbi) and (cbi.hwndList <> 0) then
+    begin
+      idx := SendMessage(cbi.hwndList, LB_GETCURSEL, 0, 0);
+      if idx >= 0 then
+      begin
+        SendMessage(cbTask.Handle, CB_SETCURSEL, idx, 0);
+        cbTask.DroppedDown := False;
+      end;
+    end;
+    Exit;
   end;
+  // Closed dropdown: Enter starts the task with whatever text is there.
+  btnStartStopClick(nil);
 end;
 
 function TokensMatch(const LItem: string; const Tokens: array of string): Boolean;
@@ -629,7 +867,7 @@ begin
     cbTask.Text := Filter;
     cbTask.SelStart := OldStart;
     cbTask.SelLength := OldLen;
-    if cbTask.Focused and (cbTask.Items.Count > 0) and not cbTask.DroppedDown then
+    if cbTask.Focused and (cbTask.Items.Count > 0) and not ComboDroppedDown(cbTask.Handle) then
     begin
       FProgrammaticDrop := True;
       cbTask.DroppedDown := True;

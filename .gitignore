@@ -5,3 +5,5 @@ data/
 *.lps
 *.compiled
 backup/
+.claude/settings.local.json
+dbg.log
