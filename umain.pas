@@ -18,6 +18,12 @@ type
     miEdit: TMenuItem;
     miHideFromTaskBar: TMenuItem;
     miTopMost: TMenuItem;
+    miOpacity: TMenuItem;
+    miOp100: TMenuItem;
+    miOp90: TMenuItem;
+    miOp75: TMenuItem;
+    miOp50: TMenuItem;
+    miOp25: TMenuItem;
     miSep1: TMenuItem;
     miExit: TMenuItem;
     PopupMenu1: TPopupMenu;
@@ -36,6 +42,7 @@ type
     procedure miEditClick(Sender: TObject);
     procedure miExitClick(Sender: TObject);
     procedure miHideFromTaskBarClick(Sender: TObject);
+    procedure miOpacityClick(Sender: TObject);
     procedure miStatsClick(Sender: TObject);
     procedure miTopMostClick(Sender: TObject);
     procedure Timer1Timer(Sender: TObject);
@@ -54,6 +61,7 @@ type
     FJustSelected: Boolean;
     FCurrentMarker: string;
     FLastAlive: TDateTime;
+    FOpacity: Integer;
     procedure StartTask;
     procedure StopTask;
     procedure WriteCurrentMarker;
@@ -70,6 +78,7 @@ type
     procedure RestoreFullList;
     procedure ApplyHideFromTaskBar;
     procedure ApplyTopMost;
+    procedure ApplyOpacity(APercent: Integer);
   protected
     procedure WndProc(var Message: TLMessage); override;
   public
@@ -115,6 +124,7 @@ begin
   FAllTasks.Duplicates := dupIgnore;
   FAllTasks.Sorted := False;
   FRunning := False;
+  FOpacity := 100;
   LoadTaskHistory;
   RecoverOrphanedTask;
   LoadConfig;
@@ -142,6 +152,17 @@ begin
   // Install Win32 subclass: enables borderless edge resize via SC_SIZE
   InstallSubclass(Handle);
   FormResize(nil);
+
+  // Reflect persisted opacity into menu + apply
+  case FOpacity of
+     90: miOp90.Checked := True;
+     75: miOp75.Checked := True;
+     50: miOp50.Checked := True;
+     25: miOp25.Checked := True;
+  else
+    miOp100.Checked := True;
+  end;
+  ApplyOpacity(FOpacity);
 end;
 
 procedure TMainForm.FormClose(Sender: TObject; var CloseAction: TCloseAction);
@@ -697,6 +718,40 @@ begin
   SaveConfig;
 end;
 
+procedure TMainForm.miOpacityClick(Sender: TObject);
+begin
+  if Sender is TMenuItem then
+  begin
+    FOpacity := TMenuItem(Sender).Tag;
+    TMenuItem(Sender).Checked := True;
+    ApplyOpacity(FOpacity);
+    SaveConfig;
+  end;
+end;
+
+procedure TMainForm.ApplyOpacity(APercent: Integer);
+const
+  WS_EX_LAYERED_FLAG = $00080000;
+  LWA_ALPHA = $00000002;
+var
+  H: HWND;
+  Ex: PtrInt;
+begin
+  if not HandleAllocated then Exit;
+  H := Self.Handle;
+  Ex := GetWindowLongPtr(H, GWL_EXSTYLE);
+  if APercent >= 100 then
+  begin
+    // Fully opaque — remove layered style entirely
+    if (Ex and WS_EX_LAYERED_FLAG) <> 0 then
+      SetWindowLongPtr(H, GWL_EXSTYLE, Ex and not WS_EX_LAYERED_FLAG);
+    Exit;
+  end;
+  if (Ex and WS_EX_LAYERED_FLAG) = 0 then
+    SetWindowLongPtr(H, GWL_EXSTYLE, Ex or WS_EX_LAYERED_FLAG);
+  SetLayeredWindowAttributes(H, 0, Round(255 * APercent / 100), LWA_ALPHA);
+end;
+
 { -------- config -------- }
 
 procedure TMainForm.LoadConfig;
@@ -722,6 +777,9 @@ begin
       S := Root.GetAttribute('hideFromTaskBar');
       if S = '1' then
         miHideFromTaskBar.Checked := True;
+      S := Root.GetAttribute('opacity');
+      if TryStrToInt(S, V) and (V >= 10) and (V <= 100) then
+        FOpacity := V;
     except
     end;
   finally
@@ -746,6 +804,7 @@ begin
                          else Root.SetAttribute('topMost', '0');
     if miHideFromTaskBar.Checked then Root.SetAttribute('hideFromTaskBar', '1')
                                  else Root.SetAttribute('hideFromTaskBar', '0');
+    Root.SetAttribute('opacity', IntToStr(FOpacity));
     WriteXMLFile(Doc, FConfigFile);
   finally
     Doc.Free;

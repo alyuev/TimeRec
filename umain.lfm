@@ -87,6 +87,45 @@ object MainForm: TMainForm
       AutoCheck = True
       OnClick = miTopMostClick
     end
+    object miOpacity: TMenuItem
+      Caption = #1055#1088#1086#1079#1088#1072#1095#1085#1086#1089#1090#1100
+      object miOp100: TMenuItem
+        Caption = '100%'
+        GroupIndex = 1
+        RadioItem = True
+        Checked = True
+        Tag = 100
+        OnClick = miOpacityClick
+      end
+      object miOp90: TMenuItem
+        Caption = '90%'
+        GroupIndex = 1
+        RadioItem = True
+        Tag = 90
+        OnClick = miOpacityClick
+      end
+      object miOp75: TMenuItem
+        Caption = '75%'
+        GroupIndex = 1
+        RadioItem = True
+        Tag = 75
+        OnClick = miOpacityClick
+      end
+      object miOp50: TMenuItem
+        Caption = '50%'
+        GroupIndex = 1
+        RadioItem = True
+        Tag = 50
+        OnClick = miOpacityClick
+      end
+      object miOp25: TMenuItem
+        Caption = '25%'
+        GroupIndex = 1
+        RadioItem = True
+        Tag = 25
+        OnClick = miOpacityClick
+      end
+    end
     object miSep1: TMenuItem
       Caption = '-'
     end
