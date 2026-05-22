@@ -6,7 +6,7 @@ interface
 
 uses
   Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, Menus, Graphics,
-  LCLType, LMessages, Dialogs, Windows;
+  LCLType, LMessages, Dialogs, Windows, Types;
 
 type
   TMainForm = class(TForm)
@@ -14,6 +14,7 @@ type
     btnStartStop: TButton;
     cbTask: TComboBox;
     lblTodayTotal: TLabel;
+    pbSlider: TPaintBox;
     miBuildInfo: TMenuItem;
     miSepBuild: TMenuItem;
     miStats: TMenuItem;
@@ -36,9 +37,15 @@ type
     Timer1: TTimer;
     DeselTimer: TTimer;
     TrayIcon1: TTrayIcon;
-    shpStopBorder: TShape;
     procedure btnSettingsClick(Sender: TObject);
     procedure btnStartStopClick(Sender: TObject);
+    procedure pbSliderMouseDown(Sender: TObject; Button: TMouseButton;
+      Shift: TShiftState; X, Y: Integer);
+    procedure pbSliderMouseLeave(Sender: TObject);
+    procedure pbSliderMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Integer);
+    procedure pbSliderMouseUp(Sender: TObject; Button: TMouseButton;
+      Shift: TShiftState; X, Y: Integer);
+    procedure pbSliderPaint(Sender: TObject);
     procedure cbTaskChange(Sender: TObject);
     procedure cbTaskDropDown(Sender: TObject);
     procedure cbTaskKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
@@ -78,7 +85,14 @@ type
     FCurrentMarker: string;
     FLastAlive: TDateTime;
     FOpacity: Integer;
+    FSliderLocked: Boolean;
+    FLockedMs: Int64;
+    FSliderDragging: Boolean;
+    FGrabX1, FGrabX2: Integer; // hitbox for drag (flag + "now" label)
     FLazyCureDir: string;
+    function CurrentElapsedMs: Int64;
+    function DisplayedMs: Int64;
+    procedure UpdateSliderFromX(X: Integer);
     function ResolvedLazyCureDir: string;
     procedure StartTask;
     procedure StopTask;
@@ -150,6 +164,7 @@ end;
 
 procedure InstallSubclass(h: HWND); forward;
 procedure SubclassComboEdit(ComboHwnd: HWND); forward;
+function FormatHMinCompact(MsTotal: Int64): string; forward;
 
 procedure TMainForm.FormCreate(Sender: TObject);
 var
@@ -163,9 +178,16 @@ begin
   FAllTasks := TStringList.Create;
   FAllTasks.Duplicates := dupIgnore;
   FAllTasks.Sorted := False;
-  FRunning := False;
+  // v2 model: always recording. The segment starts when the form opens
+  // and a "Done" click fixates it + starts the next segment.
+  FRunning := True;
+  FTaskStart := Now;
+  FCurrentTask := '';
   FOpacity := 100;
   FHighlightedIdx := -1;
+  FSliderLocked := False;
+  FLockedMs := 0;
+  FSliderDragging := False;
   // Build-time stamp injected by FPC. %DATE% → yyyy/mm/dd, %TIME% → hh:mm:ss
   miBuildInfo.Caption := 'Сборка: ' +
     Copy({$I %DATE%}, 9, 2) + '.' + Copy({$I %DATE%}, 6, 2) + '.' +
@@ -245,7 +267,7 @@ end;
 
 procedure TMainForm.FormResize(Sender: TObject);
 const
-  BaseH = 32;
+  BaseH = 56;
   FontBase = 11;
 var
   S: Double;
@@ -260,21 +282,21 @@ begin
   lblTodayTotal.Font.Height := NewFont;
   cbTask.SetBounds       (Round(84 * S),  Round(5 * S),  Round(156 * S), Round(21 * S));
   btnStartStop.SetBounds (Round(244 * S), Round(2 * S),  Round(92 * S),  Round(28 * S));
-  shpStopBorder.SetBounds(btnStartStop.Left - Round(2 * S), btnStartStop.Top - Round(2 * S),
-    btnStartStop.Width + Round(4 * S), btnStartStop.Height + Round(4 * S));
+  pbSlider.SetBounds     (Round(4 * S),   Round(32 * S), Round(332 * S), Round(22 * S));
   Application.QueueAsyncCall(@DeselectCombo, 0);
 end;
 
 procedure TMainForm.Timer1Timer(Sender: TObject);
 begin
-  if FRunning then
-  begin
-    btnStartStop.Caption := 'Stop' + LineEnding +
-      FormatDateTime(TimeFmt, Now - FTaskStart);
-    RefreshTodayTotal;
-    if (Now - FLastAlive) * 86400 > 10 then
-      UpdateCurrentMarker;
-  end;
+  // Button always shows the actual running time since segment start,
+  // independent of any manual slider lock — so the user can see live
+  // progress even after rolling the flag back.
+  btnStartStop.Caption := 'Готово' + LineEnding +
+    FormatDateTime(TimeFmt, CurrentElapsedMs / 86400000);
+  pbSlider.Invalidate;
+  RefreshTodayTotal;
+  if (Now - FLastAlive) * 86400 > 10 then
+    UpdateCurrentMarker;
 end;
 
 { -------- borderless resize support via subclassing -------- }
@@ -417,7 +439,7 @@ function NewWndProc(h: HWND; uMsg: UINT; wParam: WPARAM;
 const
   EdgePx = 4;
   BaseW = 340;
-  BaseH = 32;
+  BaseH = 56;
   AspectRatio: Double = BaseW / BaseH;
   SC_SIZE_CMD = $F000;
 var
@@ -540,11 +562,224 @@ begin
 end;
 
 procedure TMainForm.btnStartStopClick(Sender: TObject);
+var
+  T: string;
+  Dur: Int64;
+  EndDT: TDateTime;
 begin
-  if FRunning then
-    StopTask
+  T := Trim(cbTask.Text);
+  if T = '' then T := 'Не учтенно';
+  Dur := DisplayedMs;
+  if Dur < 1000 then
+  begin
+    // Less than a second — nothing meaningful to record, just refresh.
+    FTaskStart := Now;
+    FSliderLocked := False;
+    FLockedMs := 0;
+    Exit;
+  end;
+  EndDT := FTaskStart + Dur / 86400000;
+  AppendEntry(T, FTaskStart, EndDT);
+  // The new segment starts at the cut point — any time the flag was
+  // dragged off becomes the new segment's initial elapsed and keeps
+  // ticking. (Carry-over semantics intentionally restored.)
+  FTaskStart := EndDT;
+  FSliderLocked := False;
+  FLockedMs := 0;
+  SaveTaskToHistory(T);
+  // Clear the task name so the user has to pick or type the next one.
+  FCurrentTask := '';
+  FFiltering := True;
+  try
+    cbTask.Text := '';
+    cbTask.ItemIndex := -1;
+  finally
+    FFiltering := False;
+  end;
+  WriteCurrentMarker;
+  RefreshTodayTotal;
+  Timer1Timer(nil);
+end;
+
+function TMainForm.CurrentElapsedMs: Int64;
+begin
+  Result := Round((Now - FTaskStart) * 86400000);
+  if Result < 0 then Result := 0;
+end;
+
+function TMainForm.DisplayedMs: Int64;
+begin
+  if FSliderLocked then
+  begin
+    Result := FLockedMs;
+    if Result > CurrentElapsedMs then Result := CurrentElapsedMs;
+    if Result < 0 then Result := 0;
+  end
   else
-    StartTask;
+    Result := CurrentElapsedMs;
+end;
+
+procedure TMainForm.UpdateSliderFromX(X: Integer);
+const
+  Margin = 4;
+  SnapZone = 4;  // px from right edge that snap back to "unlocked / track live"
+var
+  Elapsed: Int64;
+  TrackL, TrackR: Integer;
+  Frac: Double;
+begin
+  TrackL := Margin;
+  TrackR := pbSlider.Width - Margin;
+  if X < TrackL then X := TrackL;
+  if X > TrackR then X := TrackR;
+  if TrackR <= TrackL then Exit;
+  // Dragged all the way to the right edge: unlock so the marker resumes
+  // tracking elapsed time automatically.
+  if X >= TrackR - SnapZone then
+  begin
+    FSliderLocked := False;
+    pbSlider.Invalidate;
+    Exit;
+  end;
+  Frac := (X - TrackL) / (TrackR - TrackL);
+  Elapsed := CurrentElapsedMs;
+  FLockedMs := Round(Elapsed * Frac);
+  FSliderLocked := True;
+  pbSlider.Invalidate;
+end;
+
+procedure TMainForm.pbSliderMouseDown(Sender: TObject; Button: TMouseButton;
+  Shift: TShiftState; X, Y: Integer);
+const
+  WM_NCLBUTTONDOWN_ = $00A1;
+begin
+  if Button <> mbLeft then Exit;
+  if (X >= FGrabX1) and (X <= FGrabX2) then
+  begin
+    // Inside the flag / "now-at-flag" hitbox: drag the slider.
+    FSliderDragging := True;
+    UpdateSliderFromX(X);
+  end
+  else
+  begin
+    // Anywhere else on the slider area: drag the window itself.
+    ReleaseCapture;
+    SendMessage(Self.Handle, WM_NCLBUTTONDOWN_, HTCAPTION, 0);
+  end;
+end;
+
+procedure TMainForm.pbSliderMouseMove(Sender: TObject; Shift: TShiftState;
+  X, Y: Integer);
+begin
+  if FSliderDragging then UpdateSliderFromX(X);
+end;
+
+procedure TMainForm.pbSliderMouseUp(Sender: TObject; Button: TMouseButton;
+  Shift: TShiftState; X, Y: Integer);
+begin
+  if Button = mbLeft then FSliderDragging := False;
+end;
+
+procedure TMainForm.pbSliderMouseLeave(Sender: TObject);
+var
+  P: TPoint;
+begin
+  // Cancel an active drag if the cursor has left the form entirely.
+  // (Staying inside the form but moving off the paintbox doesn't cancel
+  // — the user might be tracing along the top edge.)
+  if not FSliderDragging then Exit;
+  GetCursorPos(P);
+  if (P.X < Self.Left) or (P.X >= Self.Left + Self.Width) or
+     (P.Y < Self.Top) or (P.Y >= Self.Top + Self.Height) then
+    FSliderDragging := False;
+end;
+
+procedure TMainForm.pbSliderPaint(Sender: TObject);
+const
+  Margin = 4;
+var
+  C: TCanvas;
+  W, H, ThumbX, ArrowY: Integer;
+  TrackL, TrackR: Integer;
+  Elapsed, Disp: Int64;
+  Frac: Double;
+  StartStr, NowStr, DurStr: string;
+  StartW, NowW, DurW: Integer;
+  StartX, NowX, DurX, TextY: Integer;
+begin
+  C := pbSlider.Canvas;
+  W := pbSlider.Width;
+  H := pbSlider.Height;
+  C.Brush.Color := Color;
+  C.FillRect(0, 0, W, H);
+
+  TrackL := Margin;
+  TrackR := W - Margin;
+  ArrowY := H - 4;
+  // Smaller slider font so text + arrow + flag don't crowd each other.
+  C.Font.Height := -10;
+  Elapsed := CurrentElapsedMs;
+  Disp := DisplayedMs;
+  if Elapsed = 0 then Frac := 1.0 else Frac := Disp / Elapsed;
+  if Frac < 0 then Frac := 0;
+  if Frac > 1 then Frac := 1;
+  ThumbX := TrackL + Round((TrackR - TrackL) * Frac);
+
+  // Arrow line
+  C.Pen.Color := clGray;
+  C.Pen.Width := 1;
+  C.MoveTo(TrackL, ArrowY);
+  C.LineTo(ThumbX, ArrowY);
+  // Left arrowhead (points left ◀)
+  C.MoveTo(TrackL, ArrowY);     C.LineTo(TrackL + 4, ArrowY - 3);
+  C.MoveTo(TrackL, ArrowY);     C.LineTo(TrackL + 4, ArrowY + 3);
+  // Right arrowhead at thumb (▶)
+  C.MoveTo(ThumbX, ArrowY);     C.LineTo(ThumbX - 4, ArrowY - 3);
+  C.MoveTo(ThumbX, ArrowY);     C.LineTo(ThumbX - 4, ArrowY + 3);
+
+  // Flag: pole + triangle to the LEFT of the pole so it never clips
+  // on the right edge of the form.
+  C.Pen.Color := clBlack;
+  C.Pen.Width := 1;
+  C.MoveTo(ThumbX, ArrowY);
+  C.LineTo(ThumbX, ArrowY - 8);
+  if FSliderLocked then C.Brush.Color := clRed
+  else                  C.Brush.Color := clGreen;
+  C.Pen.Color := clMaroon;
+  C.Polygon([Point(ThumbX,     ArrowY - 8),
+             Point(ThumbX - 7, ArrowY - 6),
+             Point(ThumbX,     ArrowY - 3)]);
+  C.Brush.Color := Color;
+
+  // ----- Top row of labels -----
+  TextY := 0;
+  C.Font.Color := clWindowText;
+  StartStr := FormatDateTime('hh:nn', FTaskStart);
+  NowStr   := FormatDateTime('hh:nn', FTaskStart + Disp / 86400000);
+  DurStr   := FormatHMinCompact(Disp);
+  StartW := C.TextWidth(StartStr);
+  NowW   := C.TextWidth(NowStr);
+  DurW   := C.TextWidth(DurStr);
+  // Start time placed slightly to the right of the left arrowhead so
+  // the arrowhead stays visible.
+  StartX := TrackL + 8;
+  // "Now-at-flag" time placed slightly to the LEFT of the flag pole so
+  // the flag stays visible, and clamped within the canvas.
+  NowX := ThumbX - 10 - NowW;
+  if NowX + NowW > W - 2 then NowX := W - 2 - NowW;
+  if NowX < StartX + StartW + 6 then NowX := StartX + StartW + 6;
+  // Duration label centered between the two time labels, skipped if it
+  // would overlap them.
+  DurX := (StartX + StartW + NowX) div 2 - DurW div 2;
+  C.TextOut(StartX, TextY, StartStr);
+  if (DurX > StartX + StartW + 4) and (DurX + DurW < NowX - 4) then
+    C.TextOut(DurX, TextY, DurStr);
+  C.TextOut(NowX, TextY, NowStr);
+
+  // Remember the hitbox the mouse handler will accept for dragging:
+  // from the start of the "now-at-flag" label through past the flag.
+  FGrabX1 := NowX - 2;
+  FGrabX2 := ThumbX + 4;
 end;
 
 procedure TMainForm.btnSettingsClick(Sender: TObject);
@@ -624,41 +859,16 @@ begin
     lblTodayTotal.Caption := FormatHMinCompact(ComputeTodayTotalMs(T));
 end;
 
-procedure TMainForm.StartTask;
-var
-  T: string;
-begin
-  T := Trim(cbTask.Text);
-  if T = '' then
-  begin
-    ShowMessage('Введите название задачи');
-    cbTask.SetFocus;
-    Exit;
-  end;
-  FCurrentTask := T;
-  FTaskStart := Now;
-  FRunning := True;
-  btnStartStop.Caption := 'Stop' + LineEnding + '00:00:00';
-  shpStopBorder.Visible := True;
-  cbTask.Enabled := False;
-  SaveTaskToHistory(T);
-  WriteCurrentMarker;
-  RefreshTodayTotal;
-end;
-
+procedure TMainForm.StartTask; begin end;
 procedure TMainForm.StopTask;
-var
-  EndTime: TDateTime;
 begin
-  if not FRunning then Exit;
-  EndTime := Now;
-  AppendEntry(FCurrentTask, FTaskStart, EndTime);
+  // On close: fixate the in-progress segment if there's a task name.
+  if Trim(cbTask.Text) <> '' then
+  begin
+    FCurrentTask := Trim(cbTask.Text);
+    AppendEntry(FCurrentTask, FTaskStart, FTaskStart + DisplayedMs / 86400000);
+  end;
   DeleteCurrentMarker;
-  FRunning := False;
-  btnStartStop.Caption := 'Start';
-  shpStopBorder.Visible := False;
-  cbTask.Enabled := True;
-  RefreshTodayTotal;
 end;
 
 { -------- crash-safe marker -------- }
@@ -1320,10 +1530,9 @@ begin
       S := Root.GetAttribute('top');    if TryStrToInt(S, V) then Top := V;
       S := Root.GetAttribute('width');  if TryStrToInt(S, V) then Width  := V;
       S := Root.GetAttribute('height'); if TryStrToInt(S, V) then Height := V;
-      // Normalize to current aspect ratio in case an older config saved
-      // width/height that don't match the layout's expected ratio.
-      if Height < 32 then Height := 32;
-      Width := Round(Height * 340 / 32);
+      // Normalize: in v2 the form is 340x56 (slider added below).
+      if Height < 56 then Height := 56;
+      Width := Round(Height * 340 / 56);
       S := Root.GetAttribute('topMost');
       if S = '0' then
         miTopMost.Checked := False;

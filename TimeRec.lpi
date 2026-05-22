@@ -17,7 +17,7 @@
         <CompilerOptions>
           <Version Value="11"/>
           <Target>
-            <Filename Value="bin\TimeRec"/>
+            <Filename Value="bin\TimeRec_v2"/>
           </Target>
           <SearchPaths>
             <IncludeFiles Value="$(ProjOutDir)"/>
@@ -101,7 +101,7 @@
   <CompilerOptions>
     <Version Value="11"/>
     <Target>
-      <Filename Value="bin\TimeRec"/>
+      <Filename Value="bin\TimeRec_v2"/>
     </Target>
     <SearchPaths>
       <IncludeFiles Value="$(ProjOutDir)"/>
