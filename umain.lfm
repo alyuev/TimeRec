@@ -76,6 +76,13 @@ object MainForm: TMainForm
   object PopupMenu1: TPopupMenu
     Left = 8
     Top = 8
+    object miBuildInfo: TMenuItem
+      Caption = #1057#1073#1086#1088#1082#1072': ?'
+      Enabled = False
+    end
+    object miSepBuild: TMenuItem
+      Caption = '-'
+    end
     object miStats: TMenuItem
       Caption = #1057#1090#1072#1090#1080#1089#1090#1080#1082#1072
       OnClick = miStatsClick

@@ -14,6 +14,8 @@ type
     cbTask: TComboBox;
     lblClock: TLabel;
     lblElapsed: TLabel;
+    miBuildInfo: TMenuItem;
+    miSepBuild: TMenuItem;
     miStats: TMenuItem;
     miEdit: TMenuItem;
     miHideFromTaskBar: TMenuItem;
@@ -136,6 +138,10 @@ begin
   FRunning := False;
   FOpacity := 100;
   FHighlightedIdx := -1;
+  // Build-time stamp injected by FPC. %DATE% → yyyy/mm/dd, %TIME% → hh:mm:ss
+  miBuildInfo.Caption := 'Сборка: ' +
+    Copy({$I %DATE%}, 9, 2) + '.' + Copy({$I %DATE%}, 6, 2) + '.' +
+    Copy({$I %DATE%}, 1, 4) + ' ' + Copy({$I %TIME%}, 1, 5);
   LoadTaskHistory;
   RecoverOrphanedTask;
   LoadConfig;
