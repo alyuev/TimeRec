@@ -10,10 +10,10 @@ uses
 
 type
   TMainForm = class(TForm)
+    btnSettings: TButton;
     btnStartStop: TButton;
     cbTask: TComboBox;
-    lblClock: TLabel;
-    lblElapsed: TLabel;
+    lblTodayTotal: TLabel;
     miBuildInfo: TMenuItem;
     miSepBuild: TMenuItem;
     miStats: TMenuItem;
@@ -37,6 +37,7 @@ type
     DeselTimer: TTimer;
     TrayIcon1: TTrayIcon;
     shpStopBorder: TShape;
+    procedure btnSettingsClick(Sender: TObject);
     procedure btnStartStopClick(Sender: TObject);
     procedure cbTaskChange(Sender: TObject);
     procedure cbTaskDropDown(Sender: TObject);
@@ -85,6 +86,8 @@ type
     procedure UpdateCurrentMarker;
     procedure DeleteCurrentMarker;
     procedure RecoverOrphanedTask;
+    procedure RefreshTodayTotal;
+    function ComputeTodayTotalMs(const Task: string): Int64;
     procedure LoadTaskHistory;
     procedure SaveTaskToHistory(const ATask: string);
     procedure AppendEntry(const ATask: string; AStart, AEnd: TDateTime);
@@ -193,6 +196,10 @@ begin
 
   // Install Win32 subclass: enables borderless edge resize via SC_SIZE
   InstallSubclass(Handle);
+  // Allow the Start/Stop button to render Caption on two lines
+  if btnStartStop.HandleAllocated then
+    SetWindowLong(btnStartStop.Handle, GWL_STYLE,
+      GetWindowLong(btnStartStop.Handle, GWL_STYLE) or $00002000); // BS_MULTILINE
   FormResize(nil);
 
   // Reflect persisted opacity into menu + apply
@@ -247,33 +254,27 @@ begin
   if not HandleAllocated then Exit;
   S := Height / BaseH;
   NewFont := -Round(FontBase * S);
-  // Form font (cbTask + btnStartStop inherit through ParentFont)
   Font.Height := NewFont;
-  // Labels have their own font settings — scale explicitly
-  lblClock.Font.Height := NewFont;
-  lblClock.SetBounds(Round(4 * S),  Round(2  * S), Round(46 * S), Round(13 * S));
-  lblElapsed.Font.Height := NewFont;
-  lblElapsed.SetBounds(Round(4 * S), Round(16 * S), Round(46 * S), Round(13 * S));
-  cbTask.SetBounds(Round(54 * S),  Round(5 * S), Round(190 * S), Round(21 * S));
-  btnStartStop.SetBounds(Round(248 * S), Round(4 * S), Round(52 * S), Round(24 * S));
+  btnSettings.SetBounds  (Round(4 * S),   Round(2 * S),  Round(22 * S),  Round(28 * S));
+  lblTodayTotal.SetBounds(Round(30 * S),  Round(10 * S), Round(50 * S),  Round(13 * S));
+  lblTodayTotal.Font.Height := NewFont;
+  cbTask.SetBounds       (Round(84 * S),  Round(5 * S),  Round(156 * S), Round(21 * S));
+  btnStartStop.SetBounds (Round(244 * S), Round(2 * S),  Round(92 * S),  Round(28 * S));
   shpStopBorder.SetBounds(btnStartStop.Left - Round(2 * S), btnStartStop.Top - Round(2 * S),
     btnStartStop.Width + Round(4 * S), btnStartStop.Height + Round(4 * S));
-  // Resizing the combo can leave its edit with a selection highlight —
-  // schedule a deselect after the event chain settles.
   Application.QueueAsyncCall(@DeselectCombo, 0);
 end;
 
 procedure TMainForm.Timer1Timer(Sender: TObject);
 begin
-  lblClock.Caption := FormatDateTime(TimeFmt, Now);
   if FRunning then
   begin
-    lblElapsed.Caption := FormatDateTime(TimeFmt, Now - FTaskStart);
+    btnStartStop.Caption := 'Stop' + LineEnding +
+      FormatDateTime(TimeFmt, Now - FTaskStart);
+    RefreshTodayTotal;
     if (Now - FLastAlive) * 86400 > 10 then
       UpdateCurrentMarker;
-  end
-  else
-    lblElapsed.Caption := '00:00:00';
+  end;
 end;
 
 { -------- borderless resize support via subclassing -------- }
@@ -415,7 +416,7 @@ function NewWndProc(h: HWND; uMsg: UINT; wParam: WPARAM;
   lParam: LPARAM): LRESULT; stdcall;
 const
   EdgePx = 4;
-  BaseW = 304;
+  BaseW = 340;
   BaseH = 32;
   AspectRatio: Double = BaseW / BaseH;
   SC_SIZE_CMD = $F000;
@@ -546,6 +547,83 @@ begin
     StartTask;
 end;
 
+procedure TMainForm.btnSettingsClick(Sender: TObject);
+var
+  P: TPoint;
+begin
+  P.X := 0;
+  P.Y := btnSettings.Height;
+  P := btnSettings.ClientToScreen(P);
+  PopupMenu1.PopUp(P.X, P.Y);
+end;
+
+function FormatHMinCompact(MsTotal: Int64): string;
+var
+  TotalMin, H, M: Int64;
+begin
+  TotalMin := MsTotal div 60000;
+  if TotalMin = 0 then Exit('0мин');
+  H := TotalMin div 60;
+  M := TotalMin mod 60;
+  if H = 0 then      Result := IntToStr(M) + 'мин'
+  else if M = 0 then Result := IntToStr(H) + 'ч'
+  else               Result := IntToStr(H) + 'ч' + IntToStr(M);
+end;
+
+function TMainForm.ComputeTodayTotalMs(const Task: string): Int64;
+var
+  Doc: TXMLDocument;
+  Node: TDOMNode;
+  EntryTask, DurStr: string;
+  F: string;
+begin
+  Result := 0;
+  if Task = '' then Exit;
+  F := FDataDir + PathDelim + FormatDateTime('yyyy-mm-dd', Now) + '.xml';
+  if FileExists(F) then
+  begin
+    Doc := nil;
+    try
+      try
+        ReadXMLFile(Doc, F);
+        Node := Doc.DocumentElement.FirstChild;
+        while Node <> nil do
+        begin
+          if (Node.NodeName = 'entry') and (Node.Attributes <> nil)
+             and (Node.Attributes.GetNamedItem('task') <> nil)
+             and (Node.Attributes.GetNamedItem('durationMs') <> nil) then
+          begin
+            EntryTask := Node.Attributes.GetNamedItem('task').NodeValue;
+            if EntryTask = Task then
+            begin
+              DurStr := Node.Attributes.GetNamedItem('durationMs').NodeValue;
+              Inc(Result, StrToInt64Def(DurStr, 0));
+            end;
+          end;
+          Node := Node.NextSibling;
+        end;
+      except
+      end;
+    finally
+      Doc.Free;
+    end;
+  end;
+  // Add the ongoing session if it's for this task
+  if FRunning and (FCurrentTask = Task) then
+    Inc(Result, Round((Now - FTaskStart) * 86400000));
+end;
+
+procedure TMainForm.RefreshTodayTotal;
+var
+  T: string;
+begin
+  T := Trim(cbTask.Text);
+  if T = '' then
+    lblTodayTotal.Caption := ''
+  else
+    lblTodayTotal.Caption := FormatHMinCompact(ComputeTodayTotalMs(T));
+end;
+
 procedure TMainForm.StartTask;
 var
   T: string;
@@ -560,11 +638,12 @@ begin
   FCurrentTask := T;
   FTaskStart := Now;
   FRunning := True;
-  btnStartStop.Caption := 'Stop';
+  btnStartStop.Caption := 'Stop' + LineEnding + '00:00:00';
   shpStopBorder.Visible := True;
   cbTask.Enabled := False;
   SaveTaskToHistory(T);
   WriteCurrentMarker;
+  RefreshTodayTotal;
 end;
 
 procedure TMainForm.StopTask;
@@ -579,7 +658,7 @@ begin
   btnStartStop.Caption := 'Start';
   shpStopBorder.Visible := False;
   cbTask.Enabled := True;
-  lblElapsed.Caption := '00:00:00';
+  RefreshTodayTotal;
 end;
 
 { -------- crash-safe marker -------- }
@@ -700,12 +779,11 @@ procedure TMainForm.cbTaskSelect(Sender: TObject);
 begin
   FJustSelected := True;
   FJustPickedFromList := True;
-  // The blue highlight is just the focused edit's selection rendering —
-  // moving focus to the Start button hides it instantly. Use a timer with
-  // 100 ms delay so we run AFTER Windows finishes restoring focus to the
-  // combo's edit at the end of its CBN_SELCHANGE sequence.
+  // Trigger a delayed deselect (timer runs after Windows finishes its
+  // CBN_SELCHANGE focus handling).
   DeselTimer.Enabled := False;
   DeselTimer.Enabled := True;
+  RefreshTodayTotal;
 end;
 
 procedure TMainForm.DeselTimerTimer(Sender: TObject);
@@ -1240,8 +1318,12 @@ begin
       Root := Doc.DocumentElement;
       S := Root.GetAttribute('left');   if TryStrToInt(S, V) then Left := V;
       S := Root.GetAttribute('top');    if TryStrToInt(S, V) then Top := V;
-      S := Root.GetAttribute('width');  if TryStrToInt(S, V) and (V >= 304) then Width := V;
-      S := Root.GetAttribute('height'); if TryStrToInt(S, V) and (V >= 32) then Height := V;
+      S := Root.GetAttribute('width');  if TryStrToInt(S, V) then Width  := V;
+      S := Root.GetAttribute('height'); if TryStrToInt(S, V) then Height := V;
+      // Normalize to current aspect ratio in case an older config saved
+      // width/height that don't match the layout's expected ratio.
+      if Height < 32 then Height := 32;
+      Width := Round(Height * 340 / 32);
       S := Root.GetAttribute('topMost');
       if S = '0' then
         miTopMost.Checked := False;
