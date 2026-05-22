@@ -51,6 +51,17 @@ object MainForm: TMainForm
     OnKeyDown = cbTaskKeyDown
     OnSelect = cbTaskSelect
   end
+  object shpStopBorder: TShape
+    Left = 246
+    Top = 2
+    Width = 56
+    Height = 28
+    Brush.Style = bsClear
+    Pen.Color = 33023
+    Pen.Width = 2
+    Shape = stRectangle
+    Visible = False
+  end
   object btnStartStop: TButton
     Left = 248
     Top = 4

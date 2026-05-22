@@ -36,6 +36,7 @@ type
     Timer1: TTimer;
     DeselTimer: TTimer;
     TrayIcon1: TTrayIcon;
+    shpStopBorder: TShape;
     procedure btnStartStopClick(Sender: TObject);
     procedure cbTaskChange(Sender: TObject);
     procedure cbTaskDropDown(Sender: TObject);
@@ -255,6 +256,8 @@ begin
   lblElapsed.SetBounds(Round(4 * S), Round(16 * S), Round(46 * S), Round(13 * S));
   cbTask.SetBounds(Round(54 * S),  Round(5 * S), Round(190 * S), Round(21 * S));
   btnStartStop.SetBounds(Round(248 * S), Round(4 * S), Round(52 * S), Round(24 * S));
+  shpStopBorder.SetBounds(btnStartStop.Left - Round(2 * S), btnStartStop.Top - Round(2 * S),
+    btnStartStop.Width + Round(4 * S), btnStartStop.Height + Round(4 * S));
   // Resizing the combo can leave its edit with a selection highlight —
   // schedule a deselect after the event chain settles.
   Application.QueueAsyncCall(@DeselectCombo, 0);
@@ -558,6 +561,7 @@ begin
   FTaskStart := Now;
   FRunning := True;
   btnStartStop.Caption := 'Stop';
+  shpStopBorder.Visible := True;
   cbTask.Enabled := False;
   SaveTaskToHistory(T);
   WriteCurrentMarker;
@@ -573,6 +577,7 @@ begin
   DeleteCurrentMarker;
   FRunning := False;
   btnStartStop.Caption := 'Start';
+  shpStopBorder.Visible := False;
   cbTask.Enabled := True;
   lblElapsed.Caption := '00:00:00';
 end;
