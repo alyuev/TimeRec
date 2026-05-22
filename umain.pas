@@ -5,12 +5,12 @@ unit umain;
 interface
 
 uses
-  Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, Menus, Graphics,
-  LCLType, LMessages, Dialogs, Windows, Types;
+  Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, ComCtrls, Menus,
+  Buttons, Graphics, LCLType, LMessages, Dialogs, Windows, Types;
 
 type
   TMainForm = class(TForm)
-    btnSettings: TButton;
+    btnSettings: TSpeedButton;
     btnStartStop: TButton;
     cbTask: TComboBox;
     lblTodayTotal: TLabel;
@@ -24,11 +24,6 @@ type
     miHideFromTaskBar: TMenuItem;
     miTopMost: TMenuItem;
     miOpacity: TMenuItem;
-    miOp100: TMenuItem;
-    miOp90: TMenuItem;
-    miOp75: TMenuItem;
-    miOp50: TMenuItem;
-    miOp25: TMenuItem;
     miSep1: TMenuItem;
     miAbout: TMenuItem;
     miSep2: TMenuItem;
@@ -90,6 +85,10 @@ type
     FSliderDragging: Boolean;
     FGrabX1, FGrabX2: Integer; // hitbox for drag (flag + "now" label)
     FLazyCureDir: string;
+    FOpacityLbl: TLabel;
+    FOpacitySupported: Boolean;
+    procedure OpacityTrackChange(Sender: TObject);
+    function CheckOpacitySupported: Boolean;
     function CurrentElapsedMs: Int64;
     function DisplayedMs: Int64;
     procedure UpdateSliderFromX(X: Integer);
@@ -184,6 +183,7 @@ begin
   FTaskStart := Now;
   FCurrentTask := '';
   FOpacity := 100;
+  FOpacitySupported := CheckOpacitySupported;
   FHighlightedIdx := -1;
   FSliderLocked := False;
   FLockedMs := 0;
@@ -224,16 +224,15 @@ begin
       GetWindowLong(btnStartStop.Handle, GWL_STYLE) or $00002000); // BS_MULTILINE
   FormResize(nil);
 
-  // Reflect persisted opacity into menu + apply
-  case FOpacity of
-     90: miOp90.Checked := True;
-     75: miOp75.Checked := True;
-     50: miOp50.Checked := True;
-     25: miOp25.Checked := True;
+  // Apply persisted opacity. The control lives in a slider dialog now,
+  // so no checked-state to sync.
+  if FOpacitySupported then
+    ApplyOpacity(FOpacity)
   else
-    miOp100.Checked := True;
+  begin
+    miOpacity.Enabled := False;
+    miOpacity.Caption := 'Прозрачность (недоступно)';
   end;
-  ApplyOpacity(FOpacity);
 end;
 
 procedure TMainForm.FormClose(Sender: TObject; var CloseAction: TCloseAction);
@@ -291,7 +290,7 @@ begin
   // Button always shows the actual running time since segment start,
   // independent of any manual slider lock — so the user can see live
   // progress even after rolling the flag back.
-  btnStartStop.Caption := 'Готово' + LineEnding +
+  btnStartStop.Caption := 'Сделано' + LineEnding +
     FormatDateTime(TimeFmt, CurrentElapsedMs / 86400000);
   pbSlider.Invalidate;
   RefreshTodayTotal;
@@ -1334,7 +1333,7 @@ begin
   F := TForm.Create(Self);
   try
     F.Caption := 'TimeRec — О программе';
-    F.Position := poMainFormCenter;
+    F.Position := poScreenCenter;
     F.BorderStyle := bsSizeable;
     F.Width := 560; F.Height := 540;
     F.Constraints.MinWidth := 400; F.Constraints.MinHeight := 300;
@@ -1346,19 +1345,60 @@ begin
     M.ReadOnly := True;
     M.ScrollBars := ssAutoVertical;
     M.WordWrap := True;
-    M.Font.Name := 'Segoe UI';
+    M.Font.Name := 'Consolas';
     M.Font.Height := -13;
     M.Lines.Text :=
-      'TimeRec — лёгкий трекер времени для Windows.' + LineEnding +
+      'TimeRec v2 — лёгкий трекер времени для Windows.' + LineEnding +
       'Сборка: ' + Copy({$I %DATE%}, 9, 2) + '.' + Copy({$I %DATE%}, 6, 2) + '.' +
       Copy({$I %DATE%}, 1, 4) + ' ' + Copy({$I %TIME%}, 1, 5) + LineEnding +
       LineEnding +
+      'Модель работы (v2)' + LineEnding +
+      '  • Таймер запускается автоматически при открытии окна и идёт' + LineEnding +
+      '    непрерывно. Нет режима «Стоп».' + LineEnding +
+      '  • Кнопка «Готово» фиксирует текущий сегмент: запись попадает' + LineEnding +
+      '    в журнал дня, а остаток времени переносится в новый сегмент' + LineEnding +
+      '    (счётчик продолжает тикать с этой точки).' + LineEnding +
+      '  • После «Готово» поле задания очищается — нужно выбрать' + LineEnding +
+      '    или ввести следующее. Пустое имя пишется как «Не учтенно».' + LineEnding +
+      LineEnding +
+      'Стрелка-длительность под полем задания' + LineEnding +
+      '  • Слева: время старта сегмента. Справа у флажка: время «по' + LineEnding +
+      '    флагу». В центре стрелки — длительность (Hч Mмин).' + LineEnding +
+      '  • Финишный флажок можно перетаскивать ВЛЕВО мышью, чтобы' + LineEnding +
+      '    зафиксировать длительность меньше реально прошедшего' + LineEnding +
+      '    (типично: «забыл переключить задание»).' + LineEnding +
+      '  • Захват только за флажок или время-у-флага; клик в любом' + LineEnding +
+      '    другом месте под стрелкой перетаскивает само окно.' + LineEnding +
+      '  • Цвет флажка: красный — зафиксирован вручную, зелёный —' + LineEnding +
+      '    отслеживает живое время.' + LineEnding +
+      '  • Возврат флажка в крайнее правое положение разблокирует' + LineEnding +
+      '    его — таймер снова идёт сам.' + LineEnding +
+      LineEnding +
+      'Что где в окне' + LineEnding +
+      LineEnding +
+      '   [ ≡ ]   [1ч20мин]   [Задание ▼]   [ Готово ]' + LineEnding +
+      '    1          2             3         12:34:56  ← 4' + LineEnding +
+      LineEnding +
+      '   08:00  ◀───  1ч10мин  ───▷   09:10' + LineEnding +
+      '     5             6        7      8' + LineEnding +
+      LineEnding +
+      '   1 — кнопка ≡, открывает меню настроек.' + LineEnding +
+      '   2 — итог по текущему заданию за сегодня.' + LineEnding +
+      '   3 — поле задания: поиск и список MRU.' + LineEnding +
+      '   4 — кнопка «Готово»; вторая строка — счётчик' + LineEnding +
+      '       с момента старта текущего сегмента.' + LineEnding +
+      '   5 — время старта текущего сегмента.' + LineEnding +
+      '   6 — длительность; можно сдвинуть флажком влево.' + LineEnding +
+      '   7 — финишный флажок (драг влево укорачивает).' + LineEnding +
+      '   8 — время «у флажка» по часам.' + LineEnding +
+      LineEnding +
       'Главное окно' + LineEnding +
-      '  • Узкая полоска поверх всех окон с текущим временем,' + LineEnding +
-      '    счётчиком активной задачи и полем выбора задания.' + LineEnding +
-      '  • Перетаскивание мышью за любое место; resize по краям' + LineEnding +
-      '    с сохранением пропорций.' + LineEnding +
-      '  • Прозрачность 100/90/75/50/25 % через контекстное меню.' + LineEnding +
+      '  • Перетаскивание мышью за любое место (кроме контролов);' + LineEnding +
+      '    resize по краям с сохранением пропорций.' + LineEnding +
+      '  • Прозрачность: меню «Прозрачность…» открывает слайдер.' + LineEnding +
+      '    На Windows без DWM-композитора (Server 2008 R2 без' + LineEnding +
+      '    Desktop Experience) этот пункт меню недоступен — окно' + LineEnding +
+      '    остаётся непрозрачным, ограничение системы.' + LineEnding +
       '  • «Скрыть из панели задач» — окно остаётся видимым,' + LineEnding +
       '    но не появляется в taskbar/Alt+Tab.' + LineEnding +
       '  • Все настройки (позиция, размер, topmost, прозрачность,' + LineEnding +
@@ -1477,38 +1517,134 @@ begin
   SaveConfig;
 end;
 
-procedure TMainForm.miOpacityClick(Sender: TObject);
+procedure TMainForm.OpacityTrackChange(Sender: TObject);
+var
+  V: Integer;
 begin
-  if Sender is TMenuItem then
-  begin
-    FOpacity := TMenuItem(Sender).Tag;
-    TMenuItem(Sender).Checked := True;
-    ApplyOpacity(FOpacity);
-    SaveConfig;
+  if not (Sender is TTrackBar) then Exit;
+  V := TTrackBar(Sender).Position;
+  if V < 10 then V := 10;
+  if V > 100 then V := 100;
+  FOpacity := V;
+  ApplyOpacity(V);
+  if FOpacityLbl <> nil then
+    FOpacityLbl.Caption := 'Видимость окна: ' + IntToStr(V) + '%';
+end;
+
+procedure TMainForm.miOpacityClick(Sender: TObject);
+var
+  F: TForm;
+  TB: TTrackBar;
+  L: TLabel;
+  B: TButton;
+  OldOpacity: Integer;
+begin
+  OldOpacity := FOpacity;
+  F := TForm.Create(Self);
+  try
+    F.Caption := 'Прозрачность';
+    F.BorderStyle := bsToolWindow;
+    F.FormStyle := fsStayOnTop;
+    F.Position := poScreenCenter;
+    F.Width := 300;
+    F.Height := 110;
+
+    L := TLabel.Create(F);
+    L.Parent := F;
+    L.SetBounds(12, 10, 270, 16);
+    L.Caption := 'Видимость окна: ' + IntToStr(FOpacity) + '%';
+    FOpacityLbl := L;
+
+    TB := TTrackBar.Create(F);
+    TB.Parent := F;
+    TB.SetBounds(8, 30, 280, 32);
+    TB.Min := 10;
+    TB.Max := 100;
+    TB.Frequency := 5;
+    TB.Position := FOpacity;
+    TB.OnChange := @OpacityTrackChange;
+
+    B := TButton.Create(F);
+    B.Parent := F;
+    B.SetBounds(200, 72, 88, 28);
+    B.Caption := 'Закрыть';
+    B.ModalResult := mrClose;
+    B.Default := True;
+    F.ActiveControl := TB;
+
+    if F.ShowModal <> mrCancel then
+      SaveConfig
+    else
+    begin
+      // Revert on cancel (Esc) — restore previous opacity.
+      FOpacity := OldOpacity;
+      ApplyOpacity(FOpacity);
+    end;
+  finally
+    FOpacityLbl := nil;
+    F.Free;
+  end;
+end;
+
+function TMainForm.CheckOpacitySupported: Boolean;
+type
+  TDwmIsCompositionEnabled = function(out pfEnabled: BOOL): HRESULT; stdcall;
+var
+  hLib: HMODULE;
+  fn: TDwmIsCompositionEnabled;
+  EnabledFlag: BOOL;
+begin
+  Result := False;
+  hLib := LoadLibrary('dwmapi.dll');
+  if hLib = 0 then Exit;
+  try
+    fn := TDwmIsCompositionEnabled(GetProcAddress(hLib, 'DwmIsCompositionEnabled'));
+    if Assigned(fn) then
+    begin
+      EnabledFlag := False;
+      if fn(EnabledFlag) = S_OK then
+        Result := EnabledFlag;
+    end;
+  finally
+    FreeLibrary(hLib);
   end;
 end;
 
 procedure TMainForm.ApplyOpacity(APercent: Integer);
 const
-  WS_EX_LAYERED_FLAG = $00080000;
-  LWA_ALPHA = $00000002;
+  WS_EX_LAYERED_FLAG    = $00080000;
+  WS_EX_COMPOSITED_FLAG = $02000000;
+  LWA_ALPHA             = $00000002;
+  TransientFlags        = WS_EX_LAYERED_FLAG or WS_EX_COMPOSITED_FLAG;
 var
   H: HWND;
-  Ex: PtrInt;
+  Ex, NewEx: PtrInt;
+  Alpha: Byte;
 begin
   if not HandleAllocated then Exit;
+  // Skip silently on systems without DWM composition (Server 2008 R2
+  // without Desktop Experience) — the API succeeds but the result
+  // shows opaque/grey artifacts instead of true transparency.
+  if not FOpacitySupported then Exit;
   H := Self.Handle;
+  Alpha := Round(255 * APercent / 100);
   Ex := GetWindowLongPtr(H, GWL_EXSTYLE);
   if APercent >= 100 then
+    NewEx := Ex and not TransientFlags
+  else
+    NewEx := Ex or TransientFlags;
+
+  if NewEx <> Ex then
   begin
-    // Fully opaque — remove layered style entirely
-    if (Ex and WS_EX_LAYERED_FLAG) <> 0 then
-      SetWindowLongPtr(H, GWL_EXSTYLE, Ex and not WS_EX_LAYERED_FLAG);
-    Exit;
+    SetWindowLongPtr(H, GWL_EXSTYLE, NewEx);
+    SetWindowPos(H, 0, 0, 0, 0, 0,
+      SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE or
+      SWP_FRAMECHANGED);
   end;
-  if (Ex and WS_EX_LAYERED_FLAG) = 0 then
-    SetWindowLongPtr(H, GWL_EXSTYLE, Ex or WS_EX_LAYERED_FLAG);
-  SetLayeredWindowAttributes(H, 0, Round(255 * APercent / 100), LWA_ALPHA);
+  if APercent < 100 then
+    SetLayeredWindowAttributes(H, 0, Alpha, LWA_ALPHA);
+  RedrawWindow(H, nil, 0,
+    RDW_INVALIDATE or RDW_ALLCHILDREN or RDW_UPDATENOW or RDW_FRAME);
 end;
 
 { -------- config -------- }
