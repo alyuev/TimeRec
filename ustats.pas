@@ -18,9 +18,10 @@ type
 
   TStatsForm = class(TForm)
     btnCopy: TButton;
+    btnTask: TButton;
+    btnTaskReset: TButton;
     btnToggleView: TButton;
     cbPeriod: TComboBox;
-    cbTask: TComboBox;
     dtFrom: TDateEdit;
     dtTo: TDateEdit;
     lblFrom: TLabel;
@@ -32,9 +33,10 @@ type
     mmo: TMemo;
     pnlTop: TPanel;
     procedure btnCopyClick(Sender: TObject);
+    procedure btnTaskClick(Sender: TObject);
+    procedure btnTaskResetClick(Sender: TObject);
     procedure btnToggleViewClick(Sender: TObject);
     procedure cbPeriodChange(Sender: TObject);
-    procedure cbTaskChange(Sender: TObject);
     procedure dtFromChange(Sender: TObject);
     procedure dtToChange(Sender: TObject);
     procedure FormShow(Sender: TObject);
@@ -46,9 +48,12 @@ type
     FByDay: Boolean;          // current view mode
     FInternalChange: Boolean; // suppress date/period OnChange recursion
     FFirstShow: Boolean;
+    FSelectedTasks: TStringList;
+    FAllTasks: TStringList;
     procedure ApplyPresetPeriod;
     procedure Refresh;
-    procedure RebuildTaskList(const APreserveSelection: string);
+    procedure RebuildTaskList;
+    procedure UpdateTaskButtons;
     procedure CollectByTask(const ADate: TDateTime);
     procedure CollectByDay(const ADate: TDateTime; const ATask: string);
     procedure CollectLazyCure(const ADate: TDateTime; const ATask: string;
@@ -57,7 +62,7 @@ type
     procedure FillListView;
     procedure FillMemo;
     procedure SetColumnsByMode;
-    function CurrentTask: string;
+    function TaskFilterCaption: string;
   public
     procedure ShowFor(const ADataDir: string); overload;
     procedure ShowFor(const ADataDir, ALazyCureDir: string); overload;
@@ -69,7 +74,7 @@ var
 implementation
 
 uses
-  DOM, XMLRead, Clipbrd;
+  DOM, XMLRead, Clipbrd, utaskpick;
 
 {$R *.lfm}
 
@@ -178,17 +183,51 @@ begin
     finally
       FInternalChange := False;
     end;
+    if FSelectedTasks = nil then FSelectedTasks := TStringList.Create;
+    if FAllTasks      = nil then FAllTasks      := TStringList.Create;
   end;
   ApplyPresetPeriod;
   Refresh;
 end;
 
-function TStatsForm.CurrentTask: string;
+function TStatsForm.TaskFilterCaption: string;
 begin
-  if (cbTask.ItemIndex <= 0) or (cbTask.Items[cbTask.ItemIndex] = CAllTasks) then
-    Result := ''
+  if (FSelectedTasks = nil) or (FSelectedTasks.Count = 0) then
+    Result := 'Все задачи'
+  else if FSelectedTasks.Count = 1 then
+    Result := FSelectedTasks[0]
   else
-    Result := cbTask.Items[cbTask.ItemIndex];
+    Result := Format('Выбрано: %d', [FSelectedTasks.Count]);
+end;
+
+procedure TStatsForm.UpdateTaskButtons;
+begin
+  btnTask.Caption := TaskFilterCaption;
+  btnTaskReset.Enabled := (FSelectedTasks <> nil) and (FSelectedTasks.Count > 0);
+end;
+
+procedure TStatsForm.btnTaskClick(Sender: TObject);
+var
+  Sel: TStringList;
+begin
+  Sel := TStringList.Create;
+  try
+    if PickTasks(Self, FAllTasks, FSelectedTasks, Sel) then
+    begin
+      FSelectedTasks.Assign(Sel);
+      UpdateTaskButtons;
+      Refresh;
+    end;
+  finally
+    Sel.Free;
+  end;
+end;
+
+procedure TStatsForm.btnTaskResetClick(Sender: TObject);
+begin
+  if FSelectedTasks <> nil then FSelectedTasks.Clear;
+  UpdateTaskButtons;
+  Refresh;
 end;
 
 procedure TStatsForm.ApplyPresetPeriod;
@@ -242,12 +281,6 @@ begin
   finally
     FInternalChange := False;
   end;
-  Refresh;
-end;
-
-procedure TStatsForm.cbTaskChange(Sender: TObject);
-begin
-  if FInternalChange then Exit;
   Refresh;
 end;
 
@@ -398,14 +431,14 @@ begin
   end;
 end;
 
-procedure TStatsForm.RebuildTaskList(const APreserveSelection: string);
+procedure TStatsForm.RebuildTaskList;
 var
   Tasks: TStringList;
   D, EndD: TDateTime;
   Doc: TXMLDocument;
   Node: TDOMNode;
   F, N: string;
-  Idx: Integer;
+  i: Integer;
 
   procedure ScanFile(const Path, EntryTag, NameAttr: string);
   var
@@ -469,27 +502,14 @@ begin
       D := D + 1;
     end;
 
-    FInternalChange := True;
-    try
-      cbTask.Items.BeginUpdate;
-      try
-        cbTask.Items.Clear;
-        cbTask.Items.Add(CAllTasks);
-        cbTask.Items.AddStrings(Tasks);
-      finally
-        cbTask.Items.EndUpdate;
-      end;
-      Idx := -1;
-      if APreserveSelection <> '' then
-        Idx := cbTask.Items.IndexOf(APreserveSelection);
-      if Idx >= 0 then cbTask.ItemIndex := Idx
-      else             cbTask.ItemIndex := 0;
-    finally
-      FInternalChange := False;
-    end;
+    FAllTasks.Assign(Tasks);
+    for i := FSelectedTasks.Count - 1 downto 0 do
+      if FAllTasks.IndexOf(FSelectedTasks[i]) < 0 then
+        FSelectedTasks.Delete(i);
   finally
     Tasks.Free;
   end;
+  UpdateTaskButtons;
 end;
 
 procedure TStatsForm.SetColumnsByMode;
@@ -609,19 +629,20 @@ end;
 procedure TStatsForm.Refresh;
 var
   StartD, EndD, D: TDateTime;
-  i, j: Integer;
+  i, j, k: Integer;
   Tmp: TStatRow;
   Task: string;
-  CurrentSelection: string;
+  KeepIdx: array of Integer;
 begin
   if (dtFrom.Date = 0) or (dtTo.Date = 0) then Exit;
+  if FSelectedTasks = nil then FSelectedTasks := TStringList.Create;
+  if FAllTasks      = nil then FAllTasks      := TStringList.Create;
 
-  CurrentSelection := CurrentTask;
-  if CurrentSelection = '' then CurrentSelection := CAllTasks;
-  RebuildTaskList(CurrentSelection);
+  RebuildTaskList;
 
-  Task := CurrentTask;
-  FByDay := Task <> '';
+  // Mode: 1 task selected → by-day; else (0 or 2+) → by-task
+  FByDay := FSelectedTasks.Count = 1;
+  if FByDay then Task := FSelectedTasks[0] else Task := '';
   SetColumnsByMode;
 
   SetLength(FRows, 0);
@@ -631,7 +652,7 @@ begin
   EndD := dtTo.Date;
   if EndD < StartD then
   begin
-    Tmp.SortKey := StartD; StartD := EndD; EndD := Tmp.SortKey; // swap
+    Tmp.SortKey := StartD; StartD := EndD; EndD := Tmp.SortKey;
   end;
 
   D := StartD;
@@ -641,6 +662,28 @@ begin
     else           CollectByTask(D);
     CollectLazyCure(D, Task, FByDay);
     D := D + 1;
+  end;
+
+  // When 2+ tasks selected, filter the per-task rows down to that subset
+  if (not FByDay) and (FSelectedTasks.Count > 0) then
+  begin
+    SetLength(KeepIdx, 0);
+    for i := 0 to High(FRows) do
+      if FSelectedTasks.IndexOf(FRows[i].Key) >= 0 then
+      begin
+        SetLength(KeepIdx, Length(KeepIdx) + 1);
+        KeepIdx[High(KeepIdx)] := i;
+      end;
+    if Length(KeepIdx) < Length(FRows) then
+    begin
+      k := 0;
+      for i := 0 to High(KeepIdx) do
+      begin
+        if KeepIdx[i] <> k then FRows[k] := FRows[KeepIdx[i]];
+        Inc(k);
+      end;
+      SetLength(FRows, k);
+    end;
   end;
 
   for i := 0 to High(FRows) - 1 do
@@ -697,8 +740,8 @@ begin
                  + FormatDateTime('dd.mm.yyyy', dtTo.Date);
 
     Lines.Add('Период: ' + PeriodStr);
-    if FByDay then
-      Lines.Add('Задача: ' + CurrentTask);
+    if FSelectedTasks.Count > 0 then
+      Lines.Add('Задачи: ' + FSelectedTasks.CommaText);
     Lines.Add('Итого:  ' + FormatHMin(FTotalMs)
               + '  (' + FormatHHMMSS(FTotalMs) + ')');
     Lines.Add(StringOfChar('-', 60));

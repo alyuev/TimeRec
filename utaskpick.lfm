@@ -1,0 +1,64 @@
+object TaskPickForm: TTaskPickForm
+  Left = 400
+  Top = 250
+  Width = 360
+  Height = 460
+  BorderStyle = bsSizeable
+  Caption = #1042#1099#1073#1086#1088' '#1079#1072#1076#1072#1095
+  ClientHeight = 460
+  ClientWidth = 360
+  Position = poDesigned
+  OnShow = FormShow
+  LCLVersion = '4.2.0.0'
+  object edSearch: TEdit
+    Left = 8
+    Top = 8
+    Width = 344
+    Height = 23
+    TabOrder = 0
+    TextHint = #1055#1086#1080#1089#1082' ('#1086#1090' 3 '#1089#1080#1084#1074#1086#1083#1086#1074')...'
+    OnChange = edSearchChange
+  end
+  object lst: TCheckListBox
+    Left = 8
+    Top = 38
+    Width = 344
+    Height = 376
+    Anchors = [akTop, akLeft, akRight, akBottom]
+    ItemHeight = 0
+    TabOrder = 1
+    OnClickCheck = lstClickCheck
+  end
+  object btnReset: TButton
+    Left = 8
+    Top = 424
+    Width = 100
+    Height = 28
+    Anchors = [akLeft, akBottom]
+    Caption = #1057#1073#1088#1086#1089#1080#1090#1100
+    TabOrder = 2
+    OnClick = btnResetClick
+  end
+  object btnOK: TButton
+    Left = 178
+    Top = 424
+    Width = 80
+    Height = 28
+    Anchors = [akRight, akBottom]
+    Caption = 'OK'
+    Default = True
+    ModalResult = 1
+    TabOrder = 3
+  end
+  object btnCancel: TButton
+    Left = 264
+    Top = 424
+    Width = 88
+    Height = 28
+    Anchors = [akRight, akBottom]
+    Cancel = True
+    Caption = #1054#1090#1084#1077#1085#1072
+    ModalResult = 2
+    TabOrder = 4
+  end
+end
