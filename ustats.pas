@@ -40,6 +40,7 @@ type
     procedure FormShow(Sender: TObject);
   private
     FDataDir: string;
+    FLazyCureDir: string;
     FRows: array of TStatRow;
     FTotalMs: Int64;
     FByDay: Boolean;          // current view mode
@@ -58,7 +59,8 @@ type
     procedure SetColumnsByMode;
     function CurrentTask: string;
   public
-    procedure ShowFor(const ADataDir: string);
+    procedure ShowFor(const ADataDir: string); overload;
+    procedure ShowFor(const ADataDir, ALazyCureDir: string); overload;
   end;
 
 var
@@ -101,10 +103,10 @@ begin
   Result := Dir + PathDelim + FormatDateTime('yyyy-mm-dd', D) + '.xml';
 end;
 
-function LazyCureFile(const Dir: string; D: TDateTime): string;
+function LazyCureFile(const LCDir: string; D: TDateTime): string;
 begin
-  Result := Dir + PathDelim + 'LazyCure' + PathDelim
-          + FormatDateTime('yyyy-mm-dd', D) + '.timelog';
+  if LCDir = '' then Exit('');
+  Result := LCDir + PathDelim + FormatDateTime('yyyy-mm-dd', D) + '.timelog';
 end;
 
 function ParseHMS(const S: string; out Seconds: Int64): Boolean;
@@ -152,7 +154,13 @@ end;
 
 procedure TStatsForm.ShowFor(const ADataDir: string);
 begin
+  ShowFor(ADataDir, ADataDir + PathDelim + 'LazyCure');
+end;
+
+procedure TStatsForm.ShowFor(const ADataDir, ALazyCureDir: string);
+begin
   FDataDir := ADataDir;
+  FLazyCureDir := ALazyCureDir;
   FFirstShow := True;
   Show;
   BringToFront;
@@ -457,7 +465,7 @@ begin
     while D <= EndD do
     begin
       ScanFile(DayFile(FDataDir, D),     'entry',   'task');
-      ScanFile(LazyCureFile(FDataDir, D), 'Records', 'Activity');
+      ScanFile(LazyCureFile(FLazyCureDir,D), 'Records', 'Activity');
       D := D + 1;
     end;
 
@@ -513,7 +521,7 @@ var
   Idx: Integer;
   F: string;
 begin
-  F := LazyCureFile(FDataDir, ADate);
+  F := LazyCureFile(FLazyCureDir,ADate);
   if not FileExists(F) then Exit;
   Doc := nil;
   DayKey := FormatDateTime('dd.mm.yyyy', ADate);

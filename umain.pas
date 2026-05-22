@@ -18,6 +18,7 @@ type
     miSepBuild: TMenuItem;
     miStats: TMenuItem;
     miEdit: TMenuItem;
+    miLazyCureDir: TMenuItem;
     miHideFromTaskBar: TMenuItem;
     miTopMost: TMenuItem;
     miOpacity: TMenuItem;
@@ -46,6 +47,7 @@ type
     procedure miEditClick(Sender: TObject);
     procedure miExitClick(Sender: TObject);
     procedure miHideFromTaskBarClick(Sender: TObject);
+    procedure miLazyCureDirClick(Sender: TObject);
     procedure miOpacityClick(Sender: TObject);
     procedure miStatsClick(Sender: TObject);
     procedure miTopMostClick(Sender: TObject);
@@ -69,6 +71,8 @@ type
     FCurrentMarker: string;
     FLastAlive: TDateTime;
     FOpacity: Integer;
+    FLazyCureDir: string;
+    function ResolvedLazyCureDir: string;
     procedure StartTask;
     procedure StopTask;
     procedure WriteCurrentMarker;
@@ -101,7 +105,8 @@ var
 implementation
 
 uses
-  LazFileUtils, LCLIntf, DOM, XMLRead, XMLWrite, LazUTF8, ustats, uedit;
+  LazFileUtils, LCLIntf, DOM, XMLRead, XMLWrite, LazUTF8, FileCtrl,
+  ustats, uedit;
 
 {$R *.lfm}
 
@@ -934,7 +939,7 @@ procedure TMainForm.miStatsClick(Sender: TObject);
 begin
   if StatsForm = nil then
     StatsForm := TStatsForm.Create(Application);
-  StatsForm.ShowFor(FDataDir);
+  StatsForm.ShowFor(FDataDir, ResolvedLazyCureDir);
 end;
 
 procedure TMainForm.miEditClick(Sender: TObject);
@@ -942,6 +947,29 @@ begin
   if EditForm = nil then
     EditForm := TEditForm.Create(Application);
   EditForm.ShowFor(FDataDir);
+end;
+
+function TMainForm.ResolvedLazyCureDir: string;
+begin
+  if FLazyCureDir <> '' then
+    Result := FLazyCureDir
+  else
+    Result := FDataDir + PathDelim + 'LazyCure';
+end;
+
+procedure TMainForm.miLazyCureDirClick(Sender: TObject);
+var
+  D: string;
+begin
+  D := ResolvedLazyCureDir;
+  if SelectDirectory('Папка с файлами LazyCure (*.timelog)', '', D) then
+  begin
+    if (D = FDataDir + PathDelim + 'LazyCure') or (D = '') then
+      FLazyCureDir := ''
+    else
+      FLazyCureDir := D;
+    SaveConfig;
+  end;
 end;
 
 procedure TMainForm.miHideFromTaskBarClick(Sender: TObject);
@@ -1024,6 +1052,7 @@ begin
       S := Root.GetAttribute('opacity');
       if TryStrToInt(S, V) and (V >= 10) and (V <= 100) then
         FOpacity := V;
+      FLazyCureDir := Root.GetAttribute('lazyCureDir');
     except
     end;
   finally
@@ -1049,6 +1078,8 @@ begin
     if miHideFromTaskBar.Checked then Root.SetAttribute('hideFromTaskBar', '1')
                                  else Root.SetAttribute('hideFromTaskBar', '0');
     Root.SetAttribute('opacity', IntToStr(FOpacity));
+    if FLazyCureDir <> '' then
+      Root.SetAttribute('lazyCureDir', FLazyCureDir);
     WriteXMLFile(Doc, FConfigFile);
   finally
     Doc.Free;
