@@ -18,6 +18,7 @@ type
     miSepBuild: TMenuItem;
     miStats: TMenuItem;
     miEdit: TMenuItem;
+    miEditTasks: TMenuItem;
     miLazyCureDir: TMenuItem;
     miHideFromTaskBar: TMenuItem;
     miTopMost: TMenuItem;
@@ -45,6 +46,7 @@ type
     procedure FormResize(Sender: TObject);
     procedure FormShow(Sender: TObject);
     procedure miEditClick(Sender: TObject);
+    procedure miEditTasksClick(Sender: TObject);
     procedure miExitClick(Sender: TObject);
     procedure miHideFromTaskBarClick(Sender: TObject);
     procedure miLazyCureDirClick(Sender: TObject);
@@ -106,7 +108,7 @@ implementation
 
 uses
   LazFileUtils, LCLIntf, DOM, XMLRead, XMLWrite, LazUTF8, FileCtrl,
-  ustats, uedit;
+  ustats, uedit, utaskedit;
 
 {$R *.lfm}
 
@@ -939,7 +941,7 @@ procedure TMainForm.miStatsClick(Sender: TObject);
 begin
   if StatsForm = nil then
     StatsForm := TStatsForm.Create(Application);
-  StatsForm.ShowFor(FDataDir, ResolvedLazyCureDir);
+  StatsForm.ShowFor(FDataDir, ResolvedLazyCureDir, FTasksFile);
 end;
 
 procedure TMainForm.miEditClick(Sender: TObject);
@@ -947,6 +949,13 @@ begin
   if EditForm = nil then
     EditForm := TEditForm.Create(Application);
   EditForm.ShowFor(FDataDir);
+end;
+
+procedure TMainForm.miEditTasksClick(Sender: TObject);
+begin
+  if TasksEditForm = nil then
+    TasksEditForm := TTasksEditForm.Create(Application);
+  TasksEditForm.ShowFor(FTasksFile);
 end;
 
 function TMainForm.ResolvedLazyCureDir: string;

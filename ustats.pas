@@ -18,13 +18,17 @@ type
 
   TStatsForm = class(TForm)
     btnCopy: TButton;
+    btnKind: TButton;
+    btnKindReset: TButton;
     btnTask: TButton;
     btnTaskReset: TButton;
     btnToggleView: TButton;
     cbPeriod: TComboBox;
+    chkKindExclude: TCheckBox;
     dtFrom: TDateEdit;
     dtTo: TDateEdit;
     lblFrom: TLabel;
+    lblKind: TLabel;
     lblPeriod: TLabel;
     lblTask: TLabel;
     lblTo: TLabel;
@@ -33,10 +37,13 @@ type
     mmo: TMemo;
     pnlTop: TPanel;
     procedure btnCopyClick(Sender: TObject);
+    procedure btnKindClick(Sender: TObject);
+    procedure btnKindResetClick(Sender: TObject);
     procedure btnTaskClick(Sender: TObject);
     procedure btnTaskResetClick(Sender: TObject);
     procedure btnToggleViewClick(Sender: TObject);
     procedure cbPeriodChange(Sender: TObject);
+    procedure chkKindExcludeChange(Sender: TObject);
     procedure dtFromChange(Sender: TObject);
     procedure dtToChange(Sender: TObject);
     procedure FormShow(Sender: TObject);
@@ -50,10 +57,18 @@ type
     FFirstShow: Boolean;
     FSelectedTasks: TStringList;
     FAllTasks: TStringList;
+    FSelectedKinds: TStringList;
+    FAllKinds: TStringList;
+    FTaskKinds: TStringList;  // name=kind map from tasks.xml
+    FTasksFile: string;
     procedure ApplyPresetPeriod;
     procedure Refresh;
     procedure RebuildTaskList;
     procedure UpdateTaskButtons;
+    procedure UpdateKindButtons;
+    procedure LoadKindsMap;
+    function TaskKind(const Task: string): string;
+    function KindFilterAllows(const Task: string): Boolean;
     procedure CollectByTask(const ADate: TDateTime);
     procedure CollectByDay(const ADate: TDateTime; const ATask: string);
     procedure CollectLazyCure(const ADate: TDateTime; const ATask: string;
@@ -66,6 +81,7 @@ type
   public
     procedure ShowFor(const ADataDir: string); overload;
     procedure ShowFor(const ADataDir, ALazyCureDir: string); overload;
+    procedure ShowFor(const ADataDir, ALazyCureDir, ATasksFile: string); overload;
   end;
 
 var
@@ -159,13 +175,19 @@ end;
 
 procedure TStatsForm.ShowFor(const ADataDir: string);
 begin
-  ShowFor(ADataDir, ADataDir + PathDelim + 'LazyCure');
+  ShowFor(ADataDir, ADataDir + PathDelim + 'LazyCure', '');
 end;
 
 procedure TStatsForm.ShowFor(const ADataDir, ALazyCureDir: string);
 begin
+  ShowFor(ADataDir, ALazyCureDir, '');
+end;
+
+procedure TStatsForm.ShowFor(const ADataDir, ALazyCureDir, ATasksFile: string);
+begin
   FDataDir := ADataDir;
   FLazyCureDir := ALazyCureDir;
+  FTasksFile := ATasksFile;
   FFirstShow := True;
   Show;
   BringToFront;
@@ -185,6 +207,12 @@ begin
     end;
     if FSelectedTasks = nil then FSelectedTasks := TStringList.Create;
     if FAllTasks      = nil then FAllTasks      := TStringList.Create;
+    if FSelectedKinds = nil then FSelectedKinds := TStringList.Create;
+    if FAllKinds      = nil then FAllKinds      := TStringList.Create;
+    if FTaskKinds     = nil then begin
+      FTaskKinds := TStringList.Create;
+      FTaskKinds.CaseSensitive := True;
+    end;
   end;
   ApplyPresetPeriod;
   Refresh;
@@ -228,6 +256,116 @@ begin
   if FSelectedTasks <> nil then FSelectedTasks.Clear;
   UpdateTaskButtons;
   Refresh;
+end;
+
+procedure TStatsForm.btnKindClick(Sender: TObject);
+var
+  Sel: TStringList;
+begin
+  Sel := TStringList.Create;
+  try
+    if PickTasks(Self, FAllKinds, FSelectedKinds, Sel) then
+    begin
+      FSelectedKinds.Assign(Sel);
+      UpdateKindButtons;
+      Refresh;
+    end;
+  finally
+    Sel.Free;
+  end;
+end;
+
+procedure TStatsForm.btnKindResetClick(Sender: TObject);
+begin
+  if FSelectedKinds <> nil then FSelectedKinds.Clear;
+  chkKindExclude.Checked := False;
+  UpdateKindButtons;
+  Refresh;
+end;
+
+procedure TStatsForm.chkKindExcludeChange(Sender: TObject);
+begin
+  if FInternalChange then Exit;
+  Refresh;
+end;
+
+procedure TStatsForm.UpdateKindButtons;
+var
+  S: string;
+begin
+  if (FSelectedKinds = nil) or (FSelectedKinds.Count = 0) then
+    S := 'Все виды'
+  else if FSelectedKinds.Count = 1 then
+    S := FSelectedKinds[0]
+  else
+    S := Format('Выбрано: %d', [FSelectedKinds.Count]);
+  btnKind.Caption := S;
+  btnKindReset.Enabled := (FSelectedKinds <> nil) and (FSelectedKinds.Count > 0);
+end;
+
+procedure TStatsForm.LoadKindsMap;
+var
+  Doc: TXMLDocument;
+  Node: TDOMNode;
+  TaskNm, Kind: string;
+  i: Integer;
+begin
+  FTaskKinds.Clear;
+  FAllKinds.Clear;
+  if (FTasksFile = '') or (not FileExists(FTasksFile)) then Exit;
+  Doc := nil;
+  try
+    try
+      ReadXMLFile(Doc, FTasksFile);
+      Node := Doc.DocumentElement.FirstChild;
+      while Node <> nil do
+      begin
+        if (Node.NodeName = 'task') and (Node.Attributes <> nil)
+           and (Node.Attributes.GetNamedItem('name') <> nil) then
+        begin
+          TaskNm := Node.Attributes.GetNamedItem('name').NodeValue;
+          if Node.Attributes.GetNamedItem('kind') <> nil then
+            Kind := Node.Attributes.GetNamedItem('kind').NodeValue
+          else
+            Kind := '';
+          if TaskNm <> '' then
+            FTaskKinds.Values[TaskNm] := Kind;
+          if (Kind <> '') and (FAllKinds.IndexOf(Kind) < 0) then
+            FAllKinds.Add(Kind);
+        end;
+        Node := Node.NextSibling;
+      end;
+    except
+    end;
+  finally
+    Doc.Free;
+  end;
+  FAllKinds.Sort;
+  if FSelectedKinds <> nil then
+    for i := FSelectedKinds.Count - 1 downto 0 do
+      if FAllKinds.IndexOf(FSelectedKinds[i]) < 0 then
+        FSelectedKinds.Delete(i);
+end;
+
+function TStatsForm.TaskKind(const Task: string): string;
+begin
+  if FTaskKinds = nil then Exit('');
+  Result := FTaskKinds.Values[Task];
+end;
+
+function TStatsForm.KindFilterAllows(const Task: string): Boolean;
+var
+  K: string;
+  InSet: Boolean;
+begin
+  Result := True;
+  if (FSelectedKinds = nil) or (FSelectedKinds.Count = 0) then Exit;
+  K := TaskKind(Task);
+  InSet := FSelectedKinds.IndexOf(K) >= 0;
+  if chkKindExclude.Checked then
+    Result := not InSet
+  else
+    Result := InSet;
 end;
 
 procedure TStatsForm.ApplyPresetPeriod;
@@ -637,7 +775,14 @@ begin
   if (dtFrom.Date = 0) or (dtTo.Date = 0) then Exit;
   if FSelectedTasks = nil then FSelectedTasks := TStringList.Create;
   if FAllTasks      = nil then FAllTasks      := TStringList.Create;
+  if FSelectedKinds = nil then FSelectedKinds := TStringList.Create;
+  if FAllKinds      = nil then FAllKinds      := TStringList.Create;
+  if FTaskKinds     = nil then begin
+    FTaskKinds := TStringList.Create; FTaskKinds.CaseSensitive := True;
+  end;
 
+  LoadKindsMap;
+  UpdateKindButtons;
   RebuildTaskList;
 
   // Mode: 1 task selected → by-day; else (0 or 2+) → by-task
@@ -664,16 +809,19 @@ begin
     D := D + 1;
   end;
 
-  // When 2+ tasks selected, filter the per-task rows down to that subset
-  if (not FByDay) and (FSelectedTasks.Count > 0) then
+  // When 2+ tasks selected (in by-task mode), filter the per-task rows.
+  // Also apply kind filter (only meaningful in by-task mode where Key=task).
+  if not FByDay then
   begin
     SetLength(KeepIdx, 0);
     for i := 0 to High(FRows) do
-      if FSelectedTasks.IndexOf(FRows[i].Key) >= 0 then
-      begin
-        SetLength(KeepIdx, Length(KeepIdx) + 1);
-        KeepIdx[High(KeepIdx)] := i;
-      end;
+    begin
+      if (FSelectedTasks.Count > 0) and (FSelectedTasks.IndexOf(FRows[i].Key) < 0) then
+        Continue;
+      if not KindFilterAllows(FRows[i].Key) then Continue;
+      SetLength(KeepIdx, Length(KeepIdx) + 1);
+      KeepIdx[High(KeepIdx)] := i;
+    end;
     if Length(KeepIdx) < Length(FRows) then
     begin
       k := 0;

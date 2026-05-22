@@ -97,27 +97,38 @@ var
   Sr: TSearchRec;
   Today: string;
   Idx: Integer;
+  Names: TStringList;
+  i: Integer;
 begin
-  cbFile.Items.BeginUpdate;
+  Names := TStringList.Create;
   try
-    cbFile.Items.Clear;
+    Names.Sorted := True;
     if FindFirst(FDataDir + PathDelim + '*.xml', faAnyFile, Sr) = 0 then
     begin
       repeat
-        if (Sr.Name <> 'tasks.xml') and (Sr.Name <> '.') and (Sr.Name <> '..') then
-          cbFile.Items.Add(ChangeFileExt(Sr.Name, ''));
+        if (Sr.Name <> 'tasks.xml') and (Sr.Name <> 'current.xml')
+           and (Sr.Name <> '.') and (Sr.Name <> '..') then
+          Names.Add(ChangeFileExt(Sr.Name, ''));
       until FindNext(Sr) <> 0;
       FindClose(Sr);
     end;
-    cbFile.Sorted := True;
-    cbFile.Sorted := False;
+    cbFile.Items.BeginUpdate;
+    try
+      cbFile.Items.Clear;
+      // Names is ascending (yyyy-mm-dd) — feed in reverse so newest is on top
+      for i := Names.Count - 1 downto 0 do
+        cbFile.Items.Add(Names[i]);
+    finally
+      cbFile.Items.EndUpdate;
+    end;
   finally
-    cbFile.Items.EndUpdate;
+    Names.Free;
   end;
   Today := FormatDateTime('yyyy-mm-dd', Now);
   Idx := cbFile.Items.IndexOf(Today);
+  // List is sorted newest-first; fall back to the top entry (most recent)
   if (Idx < 0) and (cbFile.Items.Count > 0) then
-    Idx := cbFile.Items.Count - 1;
+    Idx := 0;
   if Idx >= 0 then
   begin
     cbFile.ItemIndex := Idx;
