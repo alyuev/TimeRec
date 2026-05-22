@@ -29,6 +29,8 @@ type
     miOp50: TMenuItem;
     miOp25: TMenuItem;
     miSep1: TMenuItem;
+    miAbout: TMenuItem;
+    miSep2: TMenuItem;
     miExit: TMenuItem;
     PopupMenu1: TPopupMenu;
     Timer1: TTimer;
@@ -47,6 +49,7 @@ type
     procedure FormShow(Sender: TObject);
     procedure miEditClick(Sender: TObject);
     procedure miEditTasksClick(Sender: TObject);
+    procedure miAboutClick(Sender: TObject);
     procedure miExitClick(Sender: TObject);
     procedure miHideFromTaskBarClick(Sender: TObject);
     procedure miLazyCureDirClick(Sender: TObject);
@@ -935,6 +938,96 @@ end;
 procedure TMainForm.miExitClick(Sender: TObject);
 begin
   Close;
+end;
+
+procedure TMainForm.miAboutClick(Sender: TObject);
+var
+  F: TForm;
+  M: TMemo;
+  B: TButton;
+begin
+  F := TForm.Create(Self);
+  try
+    F.Caption := 'TimeRec — О программе';
+    F.Position := poMainFormCenter;
+    F.BorderStyle := bsSizeable;
+    F.Width := 560; F.Height := 540;
+    F.Constraints.MinWidth := 400; F.Constraints.MinHeight := 300;
+
+    M := TMemo.Create(F);
+    M.Parent := F;
+    M.Align := alClient;
+    M.BorderSpacing.Around := 8;
+    M.ReadOnly := True;
+    M.ScrollBars := ssAutoVertical;
+    M.WordWrap := True;
+    M.Font.Name := 'Segoe UI';
+    M.Font.Height := -13;
+    M.Lines.Text :=
+      'TimeRec — лёгкий трекер времени для Windows.' + LineEnding +
+      'Сборка: ' + Copy({$I %DATE%}, 9, 2) + '.' + Copy({$I %DATE%}, 6, 2) + '.' +
+      Copy({$I %DATE%}, 1, 4) + ' ' + Copy({$I %TIME%}, 1, 5) + LineEnding +
+      LineEnding +
+      'Главное окно' + LineEnding +
+      '  • Узкая полоска поверх всех окон с текущим временем,' + LineEnding +
+      '    счётчиком активной задачи и полем выбора задания.' + LineEnding +
+      '  • Перетаскивание мышью за любое место; resize по краям' + LineEnding +
+      '    с сохранением пропорций.' + LineEnding +
+      '  • Прозрачность 100/90/75/50/25 % через контекстное меню.' + LineEnding +
+      '  • «Скрыть из панели задач» — окно остаётся видимым,' + LineEnding +
+      '    но не появляется в taskbar/Alt+Tab.' + LineEnding +
+      '  • Все настройки (позиция, размер, topmost, прозрачность,' + LineEnding +
+      '    taskbar-флаг) сохраняются в config.xml.' + LineEnding +
+      LineEnding +
+      'Поле задачи' + LineEnding +
+      '  • Поиск с третьего символа, по подстроке, многословный' + LineEnding +
+      '    (порядок слов не важен).' + LineEnding +
+      '  • Полный список задач — клик по треугольнику.' + LineEnding +
+      '  • Стрелками ↑/↓ навигация по списку без замены текста.' + LineEnding +
+      '  • Список отсортирован по последнему использованию (MRU).' + LineEnding +
+      LineEnding +
+      'Хранение данных' + LineEnding +
+      '  • data/YYYY-MM-DD.xml — журнал событий за день.' + LineEnding +
+      '  • data/tasks.xml — справочник заданий с видом и lastUsed.' + LineEnding +
+      '  • data/current.xml — маркер активной задачи; при аварийном' + LineEnding +
+      '    закрытии задача автоматически закрывается на следующем' + LineEnding +
+      '    запуске (теряется максимум 10 секунд).' + LineEnding +
+      LineEnding +
+      'Контекстное меню (правый клик)' + LineEnding +
+      '  • Статистика — окно с периодами, выбором задач и видов,' + LineEnding +
+      '    табличным и текстовым выводом, копированием в буфер.' + LineEnding +
+      '  • Редактирование событий — правка дневных журналов;' + LineEnding +
+      '    длительность пересчитывается на лету.' + LineEnding +
+      '  • Редактирование заданий — задание имени и вида;' + LineEnding +
+      '    удаление с подтверждением.' + LineEnding +
+      '  • Папка LazyCure — указание стороннего каталога LazyCure;' + LineEnding +
+      '    его файлы .timelog читаются прозрачно для статистики.' + LineEnding +
+      '  • Скрыть из панели задач, Поверх всех окон, Прозрачность,' + LineEnding +
+      '    О программе, Выход.' + LineEnding +
+      LineEnding +
+      'Статистика' + LineEnding +
+      '  • Периоды: Сегодня / Вчера / Неделя / Месяц / Произвольный.' + LineEnding +
+      '  • Мульти-фильтр задач с поиском и сбросом флажков.' + LineEnding +
+      '  • Мульти-фильтр по виду (kind) с режимом «исключить»' + LineEnding +
+      '    для скрытия категорий типа Обед или Совещания.' + LineEnding +
+      '  • Длительности в формате 1ч10мин и HH:MM:SS,' + LineEnding +
+      '    сортировка по первому старту.' + LineEnding +
+      '  • Текстовый вид + кнопка «Скопировать в буфер».';
+
+    B := TButton.Create(F);
+    B.Parent := F;
+    B.Caption := 'Закрыть';
+    B.ModalResult := mrClose;
+    B.Anchors := [akRight, akBottom];
+    B.Width := 100; B.Height := 28;
+    B.Left := F.ClientWidth - B.Width - 8;
+    B.Top := F.ClientHeight - B.Height - 8;
+    F.ActiveControl := B;
+
+    F.ShowModal;
+  finally
+    F.Free;
+  end;
 end;
 
 procedure TMainForm.miStatsClick(Sender: TObject);
