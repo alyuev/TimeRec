@@ -50,6 +50,8 @@ type
     procedure RebuildTaskList(const APreserveSelection: string);
     procedure CollectByTask(const ADate: TDateTime);
     procedure CollectByDay(const ADate: TDateTime; const ATask: string);
+    procedure CollectLazyCure(const ADate: TDateTime; const ATask: string;
+      ByDay: Boolean);
     function FindRow(const Key: string): Integer;
     procedure FillListView;
     procedure FillMemo;
@@ -97,6 +99,37 @@ end;
 function DayFile(const Dir: string; D: TDateTime): string;
 begin
   Result := Dir + PathDelim + FormatDateTime('yyyy-mm-dd', D) + '.xml';
+end;
+
+function LazyCureFile(const Dir: string; D: TDateTime): string;
+begin
+  Result := Dir + PathDelim + 'LazyCure' + PathDelim
+          + FormatDateTime('yyyy-mm-dd', D) + '.timelog';
+end;
+
+function ParseHMS(const S: string; out Seconds: Int64): Boolean;
+var
+  P1, P2: Integer;
+  H, M, Sec: Integer;
+begin
+  Result := False;
+  P1 := Pos(':', S);
+  if P1 = 0 then Exit;
+  P2 := Pos(':', S, P1 + 1);
+  if P2 = 0 then Exit;
+  if not TryStrToInt(Copy(S, 1, P1 - 1), H) then Exit;
+  if not TryStrToInt(Copy(S, P1 + 1, P2 - P1 - 1), M) then Exit;
+  if not TryStrToInt(Copy(S, P2 + 1, MaxInt), Sec) then Exit;
+  Seconds := Int64(H) * 3600 + M * 60 + Sec;
+  Result := True;
+end;
+
+function ParseHMSTime(const S: string; out T: TDateTime): Boolean;
+var
+  Secs: Int64;
+begin
+  Result := ParseHMS(S, Secs);
+  if Result then T := Secs / 86400.0;
 end;
 
 function ParseIsoLite(const S: string; out DT: TDateTime): Boolean;
@@ -365,6 +398,54 @@ var
   Node: TDOMNode;
   F, N: string;
   Idx: Integer;
+
+  procedure ScanFile(const Path, EntryTag, NameAttr: string);
+  var
+    Child: TDOMNode;
+  begin
+    if not FileExists(Path) then Exit;
+    Doc := nil;
+    try
+      try
+        ReadXMLFile(Doc, Path);
+        Node := Doc.DocumentElement.FirstChild;
+        while Node <> nil do
+        begin
+          if Node.NodeName = EntryTag then
+          begin
+            if (NameAttr = 'task') and (Node.Attributes <> nil)
+               and (Node.Attributes.GetNamedItem('task') <> nil) then
+            begin
+              N := Node.Attributes.GetNamedItem('task').NodeValue;
+              if N <> '' then Tasks.Add(N);
+            end
+            else if NameAttr = 'Activity' then
+            begin
+              Child := Node.FirstChild;
+              while Child <> nil do
+              begin
+                if Child.NodeName = 'Activity' then
+                begin
+                  if Child.FirstChild <> nil then
+                    N := Child.FirstChild.NodeValue
+                  else
+                    N := '';
+                  if N <> '' then Tasks.Add(N);
+                  Break;
+                end;
+                Child := Child.NextSibling;
+              end;
+            end;
+          end;
+          Node := Node.NextSibling;
+        end;
+      except
+      end;
+    finally
+      Doc.Free;
+    end;
+  end;
+
 begin
   Tasks := TStringList.Create;
   try
@@ -375,30 +456,8 @@ begin
     if (D = 0) or (EndD = 0) then Exit;
     while D <= EndD do
     begin
-      F := DayFile(FDataDir, D);
-      if FileExists(F) then
-      begin
-        Doc := nil;
-        try
-          try
-            ReadXMLFile(Doc, F);
-            Node := Doc.DocumentElement.FirstChild;
-            while Node <> nil do
-            begin
-              if (Node.NodeName = 'entry') and (Node.Attributes <> nil)
-                 and (Node.Attributes.GetNamedItem('task') <> nil) then
-              begin
-                N := Node.Attributes.GetNamedItem('task').NodeValue;
-                if N <> '' then Tasks.Add(N);
-              end;
-              Node := Node.NextSibling;
-            end;
-          except
-          end;
-        finally
-          Doc.Free;
-        end;
-      end;
+      ScanFile(DayFile(FDataDir, D),     'entry',   'task');
+      ScanFile(LazyCureFile(FDataDir, D), 'Records', 'Activity');
       D := D + 1;
     end;
 
@@ -441,6 +500,104 @@ begin
   end;
 end;
 
+procedure TStatsForm.CollectLazyCure(const ADate: TDateTime;
+  const ATask: string; ByDay: Boolean);
+var
+  Doc: TXMLDocument;
+  Node, Child: TDOMNode;
+  TaskName, StartS, DurS, DayKey: string;
+  StartT: TDateTime;
+  StartDT: TDateTime;
+  DurSec: Int64;
+  AddMs: Int64;
+  Idx: Integer;
+  F: string;
+begin
+  F := LazyCureFile(FDataDir, ADate);
+  if not FileExists(F) then Exit;
+  Doc := nil;
+  DayKey := FormatDateTime('dd.mm.yyyy', ADate);
+  try
+    try
+      ReadXMLFile(Doc, F);
+      Node := Doc.DocumentElement.FirstChild;
+      while Node <> nil do
+      begin
+        if Node.NodeName = 'Records' then
+        begin
+          TaskName := ''; StartS := ''; DurS := '';
+          Child := Node.FirstChild;
+          while Child <> nil do
+          begin
+            if (Child.NodeName = 'Activity') and (Child.FirstChild <> nil) then
+              TaskName := Child.FirstChild.NodeValue
+            else if (Child.NodeName = 'Start') and (Child.FirstChild <> nil) then
+              StartS := Child.FirstChild.NodeValue
+            else if (Child.NodeName = 'Duration') and (Child.FirstChild <> nil) then
+              DurS := Child.FirstChild.NodeValue;
+            Child := Child.NextSibling;
+          end;
+          if (TaskName <> '') and ParseHMSTime(StartS, StartT)
+             and ParseHMS(DurS, DurSec) then
+          begin
+            StartDT := Trunc(ADate) + StartT;
+            AddMs := DurSec * 1000;
+            if ByDay then
+            begin
+              if TaskName = ATask then
+              begin
+                Idx := FindRow(DayKey);
+                if Idx < 0 then
+                begin
+                  SetLength(FRows, Length(FRows) + 1);
+                  with FRows[High(FRows)] do
+                  begin
+                    Key := DayKey;
+                    DurationMs := AddMs;
+                    Sessions := 1;
+                    SortKey := ADate;
+                  end;
+                end
+                else
+                begin
+                  Inc(FRows[Idx].DurationMs, AddMs);
+                  Inc(FRows[Idx].Sessions);
+                end;
+              end;
+            end
+            else
+            begin
+              Idx := FindRow(TaskName);
+              if Idx < 0 then
+              begin
+                SetLength(FRows, Length(FRows) + 1);
+                with FRows[High(FRows)] do
+                begin
+                  Key := TaskName;
+                  DurationMs := AddMs;
+                  Sessions := 1;
+                  SortKey := StartDT;
+                end;
+              end
+              else
+              begin
+                Inc(FRows[Idx].DurationMs, AddMs);
+                Inc(FRows[Idx].Sessions);
+                if (FRows[Idx].SortKey = 0) or (StartDT < FRows[Idx].SortKey) then
+                  FRows[Idx].SortKey := StartDT;
+              end;
+            end;
+          end;
+        end;
+        Node := Node.NextSibling;
+      end;
+    except
+    end;
+  finally
+    Doc.Free;
+  end;
+end;
+
 procedure TStatsForm.Refresh;
 var
   StartD, EndD, D: TDateTime;
@@ -474,6 +631,7 @@ begin
   begin
     if FByDay then CollectByDay(D, Task)
     else           CollectByTask(D);
+    CollectLazyCure(D, Task, FByDay);
     D := D + 1;
   end;
 
