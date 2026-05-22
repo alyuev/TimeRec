@@ -111,7 +111,21 @@ implementation
 
 uses
   LazFileUtils, LCLIntf, DOM, XMLRead, XMLWrite, LazUTF8, FileCtrl,
-  ustats, uedit, utaskedit;
+  ComObj, ActiveX, ustats, uedit, utaskedit;
+
+const
+  CLSID_TaskbarList: TGUID = '{56FDF344-FD6D-11d0-958A-006097C9A090}';
+  SID_ITaskbarList  = '{56FDF342-FD6D-11d0-958A-006097C9A090}';
+
+type
+  ITaskbarList = interface(IUnknown)
+    [SID_ITaskbarList]
+    function HrInit: HRESULT; stdcall;
+    function AddTab(hwnd: HWND): HRESULT; stdcall;
+    function DeleteTab(hwnd: HWND): HRESULT; stdcall;
+    function ActivateTab(hwnd: HWND): HRESULT; stdcall;
+    function SetActiveAlt(hwnd: HWND): HRESULT; stdcall;
+  end;
 
 {$R *.lfm}
 
@@ -893,25 +907,103 @@ begin
   end;
 end;
 
+procedure ApplyTBL(HideFlag: Boolean; H: HWND);
+var
+  TBL: ITaskbarList;
+begin
+  if H = 0 then Exit;
+  try
+    TBL := CreateComObject(CLSID_TaskbarList) as ITaskbarList;
+    if TBL <> nil then
+    begin
+      TBL.HrInit;
+      if HideFlag then TBL.DeleteTab(H)
+      else           TBL.AddTab(H);
+    end;
+  except
+  end;
+end;
+
 procedure TMainForm.ApplyHideFromTaskBar;
 const
   WS_EX_TOOLWINDOW_FLAG = $00000080;
+  WS_EX_APPWINDOW_FLAG  = $00040000;
+  COINIT_APARTMENTTHREADED_FLAG = 2;
+
+  procedure ToggleStyle(H: HWND; HideIt: Boolean);
+  var Ex: PtrInt;
+  begin
+    if H = 0 then Exit;
+    Ex := GetWindowLongPtr(H, GWL_EXSTYLE);
+    if HideIt then
+      Ex := (Ex or WS_EX_TOOLWINDOW_FLAG) and not WS_EX_APPWINDOW_FLAG
+    else
+      Ex := (Ex and not WS_EX_TOOLWINDOW_FLAG) or WS_EX_APPWINDOW_FLAG;
+    SetWindowLongPtr(H, GWL_EXSTYLE, Ex);
+    SetWindowPos(H, 0, 0, 0, 0, 0,
+      SWP_FRAMECHANGED or SWP_NOMOVE or SWP_NOSIZE or
+      SWP_NOZORDER or SWP_NOACTIVATE);
+  end;
+
 var
-  H: HWND;
-  Ex: PtrInt;
+  HApp, HMain: HWND;
+  HideFlag, MainWasVisible, ComInited: Boolean;
+  WinRect: TRect;
 begin
-  // With MainFormOnTaskBar=False the taskbar entry belongs to Application's
-  // hidden window, so toggle its tool-window flag, not the main form's.
-  H := Application.Handle;
-  if H = 0 then Exit;
-  Ex := GetWindowLongPtr(H, GWL_EXSTYLE);
-  if miHideFromTaskBar.Checked then
-    Ex := Ex or WS_EX_TOOLWINDOW_FLAG
-  else
-    Ex := Ex and not WS_EX_TOOLWINDOW_FLAG;
-  SetWindowLongPtr(H, GWL_EXSTYLE, Ex);
-  ShowWindow(H, SW_HIDE);
-  ShowWindow(H, SW_SHOW);
+  HApp     := Application.Handle;
+  HMain    := Self.Handle;
+  HideFlag := miHideFromTaskBar.Checked;
+
+  ComInited := Succeeded(CoInitializeEx(nil, COINIT_APARTMENTTHREADED_FLAG));
+
+  // Hiding the VISIBLE main form briefly is what makes Server 2008 R2's
+  // shell re-scan the owner chain for taskbar criteria. Save position
+  // because re-show can repaint.
+  MainWasVisible := IsWindowVisible(HMain);
+  GetWindowRect(HMain, WinRect);
+  if MainWasVisible then
+    ShowWindow(HMain, SW_HIDE);
+  if HApp <> 0 then
+    ShowWindow(HApp, SW_HIDE);
+
+  // Toggle WS_EX_TOOLWINDOW / WS_EX_APPWINDOW on BOTH potential taskbar
+  // carriers — versions differ on which one the shell tracks.
+  ToggleStyle(HApp,  HideFlag);
+  ToggleStyle(HMain, HideFlag);
+
+  // Re-show BEFORE talking to the shell.
+  if HApp <> 0 then
+    ShowWindow(HApp, SW_SHOWNOACTIVATE);
+  if MainWasVisible then
+  begin
+    ShowWindow(HMain, SW_SHOWNOACTIVATE);
+    SetWindowPos(HMain, 0, WinRect.Left, WinRect.Top,
+      WinRect.Right - WinRect.Left, WinRect.Bottom - WinRect.Top,
+      SWP_NOZORDER or SWP_NOACTIVATE);
+  end;
+
+  // The shell registers a new taskbar entry asynchronously on Show.
+  // Drain the message queue + brief wait + drain again so the shell has
+  // finished its work; then DeleteTab is guaranteed to target the freshly
+  // (re)created entry. Repeat the call a few times — Server 2008 R2's
+  // shell sometimes ignores the first DeleteTab while it's still
+  // populating.
+  Application.ProcessMessages;
+  Sleep(50);
+  Application.ProcessMessages;
+  ApplyTBL(HideFlag, HApp);
+  ApplyTBL(HideFlag, HMain);
+  Application.ProcessMessages;
+  Sleep(50);
+  Application.ProcessMessages;
+  ApplyTBL(HideFlag, HApp);
+  ApplyTBL(HideFlag, HMain);
+
+  if ComInited then CoUninitialize;
+
+  // Restore topmost after the visibility dance — Hide/Show can drop the
+  // TOPMOST z-order on older Windows.
+  ApplyTopMost;
 end;
 
 procedure TMainForm.ApplyTopMost;
