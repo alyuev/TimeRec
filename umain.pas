@@ -1396,9 +1396,8 @@ begin
       '  • Перетаскивание мышью за любое место (кроме контролов);' + LineEnding +
       '    resize по краям с сохранением пропорций.' + LineEnding +
       '  • Прозрачность: меню «Прозрачность…» открывает слайдер.' + LineEnding +
-      '    На Windows без DWM-композитора (Server 2008 R2 без' + LineEnding +
-      '    Desktop Experience) этот пункт меню недоступен — окно' + LineEnding +
-      '    остаётся непрозрачным, ограничение системы.' + LineEnding +
+      '    Может не работать в RDP-сессии или на Windows без' + LineEnding +
+      '    композитора (ограничение системы, не приложения).' + LineEnding +
       '  • «Скрыть из панели задач» — окно остаётся видимым,' + LineEnding +
       '    но не появляется в taskbar/Alt+Tab.' + LineEnding +
       '  • Все настройки (позиция, размер, topmost, прозрачность,' + LineEnding +
@@ -1587,27 +1586,13 @@ begin
 end;
 
 function TMainForm.CheckOpacitySupported: Boolean;
-type
-  TDwmIsCompositionEnabled = function(out pfEnabled: BOOL): HRESULT; stdcall;
-var
-  hLib: HMODULE;
-  fn: TDwmIsCompositionEnabled;
-  EnabledFlag: BOOL;
 begin
-  Result := False;
-  hLib := LoadLibrary('dwmapi.dll');
-  if hLib = 0 then Exit;
-  try
-    fn := TDwmIsCompositionEnabled(GetProcAddress(hLib, 'DwmIsCompositionEnabled'));
-    if Assigned(fn) then
-    begin
-      EnabledFlag := False;
-      if fn(EnabledFlag) = S_OK then
-        Result := EnabledFlag;
-    end;
-  finally
-    FreeLibrary(hLib);
-  end;
+  // Always enabled. Auto-detection (DwmIsCompositionEnabled,
+  // SM_REMOTESESSION) gave false negatives on configurations where the
+  // user reported transparency actually worked. If the result is bad on
+  // a given system, the user can simply not use the menu — better than
+  // hiding it incorrectly.
+  Result := True;
 end;
 
 procedure TMainForm.ApplyOpacity(APercent: Integer);
