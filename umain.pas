@@ -1829,39 +1829,65 @@ begin
 end;
 
 procedure TMainForm.AppendEntry(const ATask: string; AStart, AEnd: TDateTime);
-var
-  Doc: TXMLDocument;
-  Root, El: TDOMElement;
-  LogFile: string;
-  DurMS: Int64;
-begin
-  LogFile := TodayLogFile;
-  Doc := nil;
-  try
-    if FileExists(LogFile) then
-    begin
-      ReadXMLFile(Doc, LogFile);
-      Root := Doc.DocumentElement;
-    end
-    else
-    begin
-      Doc := TXMLDocument.Create;
-      Root := Doc.CreateElement('day');
-      Root.SetAttribute('date', FormatDateTime('yyyy-mm-dd', AStart));
-      Doc.AppendChild(Root);
-    end;
 
-    DurMS := Round((AEnd - AStart) * 86400000);
-    El := Doc.CreateElement('entry');
-    El.SetAttribute('task', ATask);
-    El.SetAttribute('start', FormatDateTime(IsoFmt, AStart));
-    El.SetAttribute('end',   FormatDateTime(IsoFmt, AEnd));
-    El.SetAttribute('duration', FormatDateTime(TimeFmt, AEnd - AStart));
-    El.SetAttribute('durationMs', IntToStr(DurMS));
-    Root.AppendChild(El);
-    WriteXMLFile(Doc, LogFile);
-  finally
-    Doc.Free;
+  procedure WriteSingle(const SDT, EDT: TDateTime);
+  var
+    Doc: TXMLDocument;
+    Root, El: TDOMElement;
+    LogFile: string;
+    DurMS: Int64;
+  begin
+    if EDT <= SDT then Exit;
+    // Per-day file based on the segment's START date (not today's date,
+    // which previously misfiled split entries into the wrong day).
+    LogFile := FDataDir + PathDelim +
+               FormatDateTime('yyyy-mm-dd', SDT) + '.xml';
+    Doc := nil;
+    try
+      if FileExists(LogFile) then
+      begin
+        ReadXMLFile(Doc, LogFile);
+        Root := Doc.DocumentElement;
+      end
+      else
+      begin
+        Doc := TXMLDocument.Create;
+        Root := Doc.CreateElement('day');
+        Root.SetAttribute('date', FormatDateTime('yyyy-mm-dd', SDT));
+        Doc.AppendChild(Root);
+      end;
+      DurMS := Round((EDT - SDT) * 86400000);
+      El := Doc.CreateElement('entry');
+      El.SetAttribute('task', ATask);
+      El.SetAttribute('start', FormatDateTime(IsoFmt, SDT));
+      El.SetAttribute('end',   FormatDateTime(IsoFmt, EDT));
+      El.SetAttribute('duration', FormatDateTime(TimeFmt, EDT - SDT));
+      El.SetAttribute('durationMs', IntToStr(DurMS));
+      Root.AppendChild(El);
+      WriteXMLFile(Doc, LogFile);
+    finally
+      Doc.Free;
+    end;
+  end;
+
+var
+  CurStart, NextMidnight: TDateTime;
+begin
+  // Split the segment at every midnight so it lands in the right
+  // daily file(s). A task that started yesterday and ended today
+  // produces two entries: one in yesterday's file (up to 24:00) and
+  // one in today's file (from 00:00).
+  CurStart := AStart;
+  while CurStart < AEnd do
+  begin
+    NextMidnight := Trunc(CurStart) + 1.0;
+    if AEnd <= NextMidnight then
+    begin
+      WriteSingle(CurStart, AEnd);
+      Break;
+    end;
+    WriteSingle(CurStart, NextMidnight);
+    CurStart := NextMidnight;
   end;
 end;
 
