@@ -13,6 +13,7 @@ type
     btnSettings: TSpeedButton;
     btnStartStop: TButton;
     btnMic: TSpeedButton;
+    btnMicDrop: TSpeedButton;
     btnSys: TSpeedButton;
     btnRec: TSpeedButton;
     cbTask: TComboBox;
@@ -76,6 +77,8 @@ type
     procedure btnMicClick(Sender: TObject);
     procedure btnSysClick(Sender: TObject);
     procedure btnRecClick(Sender: TObject);
+    procedure btnMicDropClick(Sender: TObject);
+    procedure MicDropMenuClick(Sender: TObject);
     procedure miStatsClick(Sender: TObject);
     procedure miTopMostClick(Sender: TObject);
     procedure Timer1Timer(Sender: TObject);
@@ -110,6 +113,8 @@ type
     FAudioRecorder: TAudioRecorder;
     FAudioFilesForSegment: TStringList;
     FMicDevice: string;
+    FMicDropMenu: TPopupMenu;
+    procedure RefreshMicDropdownVisibility;
     procedure StartRecording;
     procedure StopRecording;
     procedure UpdateAudioStatus;
@@ -195,17 +200,20 @@ function FormatHMinCompact(MsTotal: Int64): string; forward;
 
 procedure DbgLog(const S: string);
 var
-  F: TextFile;
-  P: string;
+  H: THandle;
+  Line: AnsiString;
+const
+  P = 'd:\Develop\EXE\TimeRec\bin\trdbg.log';
 begin
-  P := ExtractFilePath(Application.ExeName) + 'dbg.log';
-  AssignFile(F, P);
-  try
-    if FileExists(P) then Append(F) else Rewrite(F);
-    WriteLn(F, FormatDateTime('hh:nn:ss.zzz', Now) + ' ' + S);
-    CloseFile(F);
-  except
-  end;
+  if FileExists(P) then
+    H := FileOpen(P, fmOpenWrite or fmShareDenyNone)
+  else
+    H := FileCreate(P);
+  if H = THandle(-1) then Exit;
+  FileSeek(H, 0, 2); // end
+  Line := FormatDateTime('hh:nn:ss.zzz', Now) + ' ' + S + #13#10;
+  FileWrite(H, Line[1], Length(Line));
+  FileClose(H);
 end;
 
 procedure TMainForm.FormCreate(Sender: TObject);
@@ -231,6 +239,7 @@ begin
   FAudioQuality := aqMid;
   FAudioRecorder := TAudioRecorder.Create(AppDir);
   FAudioFilesForSegment := TStringList.Create;
+  FMicDevice := '';
   FHighlightedIdx := -1;
   FSliderLocked := False;
   FLockedMs := 0;
@@ -269,6 +278,11 @@ begin
   if btnStartStop.HandleAllocated then
     SetWindowLong(btnStartStop.Handle, GWL_STYLE,
       GetWindowLong(btnStartStop.Handle, GWL_STYLE) or $00002000); // BS_MULTILINE
+  // LFM placeholders are 'M'/'S'; assign real emoji glyphs at runtime
+  // because LFM #NNNN only supports the BMP and 🎤/🔊 live above U+FFFF.
+  btnMic.Caption := #$F0#$9F#$8E#$A4;  // 🎤
+  btnSys.Caption := #$F0#$9F#$94#$8A;  // 🔊
+  RefreshMicDropdownVisibility;
   FormResize(nil);
 
   // Apply persisted opacity. The control lives in a slider dialog now,
@@ -319,14 +333,17 @@ end;
 
 procedure TMainForm.FormResize(Sender: TObject);
 const
-  BaseH = 80;
   FontBase = 11;
 var
+  BaseH, BaseW, WantH, NewFont: Integer;
   S: Double;
-  NewFont: Integer;
 begin
   if not HandleAllocated then Exit;
-  S := Height / BaseH;
+  if btnMic.Visible then BaseH := 80 else BaseH := 54;
+  BaseW := 340;
+  WantH := Round(Width * BaseH / BaseW);
+  if Height <> WantH then Height := WantH;
+  S := Width / BaseW;
   NewFont := -Round(FontBase * S);
   Font.Height := NewFont;
   btnSettings.SetBounds  (Round(4 * S),   Round(2 * S),  Round(22 * S),  Round(28 * S));
@@ -335,10 +352,11 @@ begin
   cbTask.SetBounds       (Round(84 * S),  Round(5 * S),  Round(156 * S), Round(21 * S));
   btnStartStop.SetBounds (Round(244 * S), Round(2 * S),  Round(92 * S),  Round(28 * S));
   pbSlider.SetBounds     (Round(4 * S),   Round(32 * S), Round(332 * S), Round(22 * S));
-  btnMic.SetBounds       (Round(4 * S),   Round(56 * S), Round(44 * S),  Round(22 * S));
-  btnSys.SetBounds       (Round(50 * S),  Round(56 * S), Round(44 * S),  Round(22 * S));
-  btnRec.SetBounds       (Round(96 * S),  Round(56 * S), Round(60 * S),  Round(22 * S));
-  lblAudio.SetBounds     (Round(162 * S), Round(60 * S), Round(174 * S), Round(14 * S));
+  btnMic.SetBounds       (Round(4 * S),   Round(56 * S), Round(28 * S),  Round(22 * S));
+  btnMicDrop.SetBounds   (Round(32 * S),  Round(56 * S), Round(12 * S),  Round(22 * S));
+  btnSys.SetBounds       (Round(48 * S),  Round(56 * S), Round(28 * S),  Round(22 * S));
+  btnRec.SetBounds       (Round(80 * S),  Round(56 * S), Round(60 * S),  Round(22 * S));
+  lblAudio.SetBounds     (Round(146 * S), Round(60 * S), Round(190 * S), Round(14 * S));
   lblAudio.Font.Height := NewFont;
   Application.QueueAsyncCall(@DeselectCombo, 0);
 end;
@@ -1638,8 +1656,89 @@ end;
 
 procedure TMainForm.btnRecClick(Sender: TObject);
 begin
+  DbgLog('btnRecClick enter Down=' + BoolToStr(btnRec.Down, True));
   if btnRec.Down then StartRecording
   else                StopRecording;
+  DbgLog('btnRecClick exit');
+end;
+
+procedure TMainForm.RefreshMicDropdownVisibility;
+var
+  Mics: TStringList;
+  HasMic: Boolean;
+  Count: Integer;
+begin
+  if FAudioRecorder = nil then Exit;
+  Mics := TStringList.Create;
+  try
+    FAudioRecorder.ListMics(Mics);
+    Count := Mics.Count;
+  finally
+    Mics.Free;
+  end;
+  HasMic := Count > 0;
+  // When the system has no microphone, hide the whole audio row and
+  // grey out the audio menu — there's nothing meaningful the user can
+  // do here.
+  btnMic.Visible     := HasMic;
+  btnMicDrop.Visible := HasMic and (Count > 1);
+  btnSys.Visible     := HasMic;
+  btnRec.Visible     := HasMic;
+  lblAudio.Visible   := HasMic;
+  miAudio.Enabled    := HasMic;
+  if HasMic then
+    ClientHeight := 80
+  else
+    ClientHeight := 54;
+  FormResize(nil);
+end;
+
+procedure TMainForm.btnMicDropClick(Sender: TObject);
+var
+  Mics: TStringList;
+  i: Integer;
+  Item: TMenuItem;
+  P: TPoint;
+begin
+  if FMicDropMenu = nil then
+    FMicDropMenu := TPopupMenu.Create(Self);
+  FMicDropMenu.Items.Clear;
+  Mics := TStringList.Create;
+  try
+    FAudioRecorder.ListMics(Mics);
+    for i := 0 to Mics.Count - 1 do
+    begin
+      Item := TMenuItem.Create(FMicDropMenu);
+      Item.Caption := Mics[i];
+      Item.GroupIndex := 12;
+      Item.RadioItem := True;
+      Item.AutoCheck := True;
+      Item.Checked := (Mics[i] = FMicDevice)
+                  or ((FMicDevice = '') and (i = 0));
+      Item.OnClick := @MicDropMenuClick;
+      FMicDropMenu.Items.Add(Item);
+    end;
+  finally
+    Mics.Free;
+  end;
+  P.X := 0;
+  P.Y := btnMicDrop.Height;
+  P := btnMicDrop.ClientToScreen(P);
+  FMicDropMenu.PopUp(P.X, P.Y);
+end;
+
+procedure TMainForm.MicDropMenuClick(Sender: TObject);
+begin
+  if Sender is TMenuItem then
+  begin
+    FMicDevice := TMenuItem(Sender).Caption;
+    SaveConfig;
+    if FAudioRecorder.IsRecording then
+    begin
+      StopRecording;
+      StartRecording;
+    end;
+  end;
 end;
 
 procedure TMainForm.StartRecording;
