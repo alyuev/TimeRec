@@ -5,7 +5,7 @@ unit uaudio;
 interface
 
 uses
-  Classes, SysUtils, Process;
+  Classes, SysUtils, Process, syncobjs, uwasapiloop;
 
 function Min(A, B: LongInt): LongInt; inline;
 
@@ -18,7 +18,11 @@ type
     FOutputFile: string;
     FStartTime: TDateTime;
     FAppDir: string;
+    FLoop: TWasapiLoopback;
+    FWriteLock: TCriticalSection;
+    FPipeBroken: Boolean;
     function FindFFmpeg: string;
+    procedure OnLoopData(Data: Pointer; Bytes: Integer);
   public
     constructor Create(const AAppDir: string);
     destructor Destroy; override;
@@ -51,12 +55,30 @@ begin
   inherited Create;
   FAppDir := AAppDir;
   FProcess := nil;
+  FWriteLock := TCriticalSection.Create;
 end;
 
 destructor TAudioRecorder.Destroy;
 begin
   if IsRecording then Stop;
+  FWriteLock.Free;
   inherited;
+end;
+
+procedure TAudioRecorder.OnLoopData(Data: Pointer; Bytes: Integer);
+begin
+  if FPipeBroken or (FProcess = nil) or (Data = nil) or (Bytes <= 0) then Exit;
+  FWriteLock.Enter;
+  try
+    if FProcess = nil then Exit;
+    try
+      FProcess.Input.Write(Data^, Bytes);
+    except
+      FPipeBroken := True;
+    end;
+  finally
+    FWriteLock.Leave;
+  end;
 end;
 
 function TAudioRecorder.FindFFmpeg: string;
@@ -169,8 +191,8 @@ end;
 function TAudioRecorder.Start(const OutFile: string; Mic, Sys: Boolean;
   Quality: TAudioQuality; const MicDevice: string): Boolean;
 var
-  Bitrate, InputCount: Integer;
-  ActualMic: string;
+  Bitrate, InputCount, SysIdx, MicIdx: Integer;
+  ActualMic, SysFmt: string;
 begin
   Result := False;
   if IsRecording then Exit;
@@ -178,10 +200,31 @@ begin
 
   FOutputFile := OutFile;
   ForceDirectories(ExtractFilePath(OutFile));
+  FPipeBroken := False;
 
   Bitrate := QualityBitrate[Quality];
   ActualMic := MicDevice;
   if ActualMic = '' then ActualMic := 'Microphone';
+  // ListMics returns UTF-8 (ffmpeg writes stderr in UTF-8). FPC's
+  // TProcess on Windows builds the WCHAR command line via the string's
+  // codepage; if our UTF-8 bytes are tagged with the default ANSI
+  // codepage they get mistranslated. Round-trip through UnicodeString
+  // produces an AnsiString in DefaultSystemCodePage that TProcess will
+  // convert back to UTF-16 correctly.
+  ActualMic := AnsiString(UTF8Decode(ActualMic));
+
+  // If system audio is requested, start WASAPI loopback first so we
+  // know the device's native PCM format to declare to ffmpeg.
+  if Sys then
+  begin
+    FLoop := TWasapiLoopback.Create;
+    FLoop.OnData := @OnLoopData;
+    if not FLoop.Start then
+    begin
+      FreeAndNil(FLoop);
+      Exit;
+    end;
+  end;
 
   FProcess := TProcess.Create(nil);
   FProcess.Executable := FindFFmpeg;
@@ -189,35 +232,49 @@ begin
   FProcess.Parameters.Add('-hide_banner');
   FProcess.Parameters.Add('-nostats');
   FProcess.Parameters.Add('-loglevel');
-  FProcess.Parameters.Add('quiet');
+  FProcess.Parameters.Add('error');
 
   InputCount := 0;
+  SysIdx := -1;
+  MicIdx := -1;
+
+  // Input 0 must be the pipe-fed one when present — ffmpeg reads
+  // stdin as pipe:0.
+  if Sys then
+  begin
+    if FLoop.IsFloat and (FLoop.BitsPerSample = 32) then SysFmt := 'f32le'
+    else if FLoop.BitsPerSample = 16 then SysFmt := 's16le'
+    else if FLoop.BitsPerSample = 32 then SysFmt := 's32le'
+    else SysFmt := 'f32le';
+    FProcess.Parameters.Add('-f');  FProcess.Parameters.Add(SysFmt);
+    FProcess.Parameters.Add('-ar'); FProcess.Parameters.Add(IntToStr(FLoop.SampleRate));
+    FProcess.Parameters.Add('-ac'); FProcess.Parameters.Add(IntToStr(FLoop.Channels));
+    FProcess.Parameters.Add('-i');  FProcess.Parameters.Add('pipe:0');
+    SysIdx := InputCount;
+    Inc(InputCount);
+  end;
   if Mic then
   begin
     FProcess.Parameters.Add('-f'); FProcess.Parameters.Add('dshow');
     FProcess.Parameters.Add('-i'); FProcess.Parameters.Add('audio=' + ActualMic);
+    MicIdx := InputCount;
     Inc(InputCount);
   end;
-  if Sys then
-  begin
-    FProcess.Parameters.Add('-f'); FProcess.Parameters.Add('dshow');
-    FProcess.Parameters.Add('-i');
-    FProcess.Parameters.Add('audio=virtual-audio-capturer');
-    Inc(InputCount);
-  end;
-  if InputCount = 2 then
+
+  if (SysIdx >= 0) and (MicIdx >= 0) then
   begin
     FProcess.Parameters.Add('-filter_complex');
-    FProcess.Parameters.Add('[0:a][1:a]amix=inputs=2:duration=longest');
+    FProcess.Parameters.Add(Format(
+      '[%d:a]aresample=async=1:first_pts=0[s];' +
+      '[%d:a]aresample=async=1:first_pts=0[m];' +
+      '[s][m]amix=inputs=2:duration=shortest:dropout_transition=0,' +
+      'volume=2', [SysIdx, MicIdx]));
   end;
 
   FProcess.Parameters.Add('-b:a');
   FProcess.Parameters.Add(IntToStr(Bitrate) + 'k');
   FProcess.Parameters.Add(FOutputFile);
 
-  // Note: no poStderrToOutPut — with quiet loglevel ffmpeg produces
-  // almost no output, but we don't drain the pipes either, so keeping
-  // the surface area small avoids the pipe-full hang.
   FProcess.Options := [poUsePipes, poNoConsole];
   try
     FProcess.Execute;
@@ -227,6 +284,7 @@ begin
     on E: Exception do
     begin
       FreeAndNil(FProcess);
+      if FLoop <> nil then FreeAndNil(FLoop);
       raise;
     end;
   end;
@@ -237,19 +295,36 @@ const
   QSeq: array[0..1] of AnsiChar = ('q', #10);
 var
   i: Integer;
+  HadLoop: Boolean;
 begin
+  HadLoop := FLoop <> nil;
+  // Stop the WASAPI loopback first so no more writes hit the pipe.
+  if FLoop <> nil then
+  begin
+    try FLoop.Stop; except end;
+    FreeAndNil(FLoop);
+  end;
   if FProcess = nil then Exit;
   try
     if FProcess.Running then
     begin
+      FWriteLock.Enter;
       try
-        FProcess.Input.Write(QSeq[0], 2);
-        FProcess.CloseInput;
-      except
+        if HadLoop then
+          // Pipe-fed input: closing stdin signals EOF and the amix
+          // shortest-duration rule unwinds the graph cleanly.
+          try FProcess.CloseInput; except end
+        else
+          // dshow-only inputs: send the ffmpeg 'q' keystroke on stdin
+          // for a graceful flush, then close.
+          try
+            FProcess.Input.Write(QSeq[0], 2);
+            FProcess.CloseInput;
+          except end;
+      finally
+        FWriteLock.Leave;
       end;
-      // Poll up to 3 seconds for graceful exit (blocking WaitOnExit
-      // hung in some scenarios).
-      for i := 1 to 30 do
+      for i := 1 to 50 do
       begin
         if not FProcess.Running then Break;
         Sleep(100);
