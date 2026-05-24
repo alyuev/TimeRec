@@ -2,10 +2,10 @@ object MainForm: TMainForm
   Left = 200
   Top = 200
   Width = 340
-  Height = 56
+  Height = 80
   BorderStyle = bsNone
   Caption = 'TimeRec'
-  ClientHeight = 56
+  ClientHeight = 80
   ClientWidth = 340
   Color = clBtnFace
   Font.Height = -11
@@ -71,6 +71,46 @@ object MainForm: TMainForm
     OnMouseUp = pbSliderMouseUp
     OnPaint = pbSliderPaint
   end
+  object btnMic: TSpeedButton
+    Left = 4
+    Top = 56
+    Width = 44
+    Height = 22
+    AllowAllUp = True
+    GroupIndex = 1
+    Caption = #1052#1080#1082#1088
+    Flat = True
+    OnClick = btnMicClick
+  end
+  object btnSys: TSpeedButton
+    Left = 50
+    Top = 56
+    Width = 44
+    Height = 22
+    AllowAllUp = True
+    GroupIndex = 2
+    Caption = #1047#1074#1091#1082
+    Flat = True
+    OnClick = btnSysClick
+  end
+  object btnRec: TSpeedButton
+    Left = 96
+    Top = 56
+    Width = 60
+    Height = 22
+    AllowAllUp = True
+    GroupIndex = 3
+    Caption = #9679' REC'
+    Flat = True
+    OnClick = btnRecClick
+  end
+  object lblAudio: TLabel
+    Left = 162
+    Top = 60
+    Width = 174
+    Height = 14
+    Caption = ''
+  end
   object Timer1: TTimer
     Interval = 500
     OnTimer = Timer1Timer
@@ -109,6 +149,42 @@ object MainForm: TMainForm
     object miLazyCureDir: TMenuItem
       Caption = #1055#1072#1087#1082#1072' LazyCure...'
       OnClick = miLazyCureDirClick
+    end
+    object miAudio: TMenuItem
+      Caption = #1047#1072#1087#1080#1089#1100' '#1072#1091#1076#1080#1086
+      OnClick = miAudioClick
+      object miAudioDir: TMenuItem
+        Caption = #1055#1072#1087#1082#1072' '#1076#1083#1103' '#1072#1091#1076#1080#1086'...'
+        OnClick = miAudioDirClick
+      end
+      object miMic: TMenuItem
+        Caption = #1052#1080#1082#1088#1086#1092#1086#1085
+      end
+      object miAudioQ: TMenuItem
+        Caption = #1050#1072#1095#1077#1089#1090#1074#1086' MP3'
+        object miAudioQLow: TMenuItem
+          Caption = #1053#1080#1079#1082#1086#1077' (64k)'
+          GroupIndex = 9
+          RadioItem = True
+          Tag = 0
+          OnClick = miAudioQClick
+        end
+        object miAudioQMid: TMenuItem
+          Caption = #1057#1088#1077#1076#1085#1077#1077' (128k)'
+          GroupIndex = 9
+          RadioItem = True
+          Checked = True
+          Tag = 1
+          OnClick = miAudioQClick
+        end
+        object miAudioQHigh: TMenuItem
+          Caption = #1042#1099#1089#1086#1082#1086#1077' (256k)'
+          GroupIndex = 9
+          RadioItem = True
+          Tag = 2
+          OnClick = miAudioQClick
+        end
+      end
     end
     object miHideFromTaskBar: TMenuItem
       Caption = #1057#1082#1088#1099#1090#1100' '#1080#1079' '#1087#1072#1085#1077#1083#1080' '#1079#1072#1076#1072#1095

@@ -6,14 +6,25 @@ interface
 
 uses
   Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, ComCtrls, Menus,
-  Buttons, Graphics, LCLType, LMessages, Dialogs, Windows, Types;
+  Buttons, Graphics, LCLType, LMessages, Dialogs, Windows, Types, uaudio;
 
 type
   TMainForm = class(TForm)
     btnSettings: TSpeedButton;
     btnStartStop: TButton;
+    btnMic: TSpeedButton;
+    btnSys: TSpeedButton;
+    btnRec: TSpeedButton;
     cbTask: TComboBox;
     lblTodayTotal: TLabel;
+    lblAudio: TLabel;
+    miAudio: TMenuItem;
+    miAudioDir: TMenuItem;
+    miMic: TMenuItem;
+    miAudioQ: TMenuItem;
+    miAudioQLow: TMenuItem;
+    miAudioQMid: TMenuItem;
+    miAudioQHigh: TMenuItem;
     pbSlider: TPaintBox;
     miBuildInfo: TMenuItem;
     miSepBuild: TMenuItem;
@@ -58,6 +69,13 @@ type
     procedure miHideFromTaskBarClick(Sender: TObject);
     procedure miLazyCureDirClick(Sender: TObject);
     procedure miOpacityClick(Sender: TObject);
+    procedure miAudioDirClick(Sender: TObject);
+    procedure miAudioQClick(Sender: TObject);
+    procedure miAudioClick(Sender: TObject);
+    procedure MicMenuClick(Sender: TObject);
+    procedure btnMicClick(Sender: TObject);
+    procedure btnSysClick(Sender: TObject);
+    procedure btnRecClick(Sender: TObject);
     procedure miStatsClick(Sender: TObject);
     procedure miTopMostClick(Sender: TObject);
     procedure Timer1Timer(Sender: TObject);
@@ -87,6 +105,15 @@ type
     FLazyCureDir: string;
     FOpacityLbl: TLabel;
     FOpacitySupported: Boolean;
+    FAudioDir: string;
+    FAudioQuality: TAudioQuality;
+    FAudioRecorder: TAudioRecorder;
+    FAudioFilesForSegment: TStringList;
+    FMicDevice: string;
+    procedure StartRecording;
+    procedure StopRecording;
+    procedure UpdateAudioStatus;
+    function ResolvedAudioDir: string;
     procedure OpacityTrackChange(Sender: TObject);
     function CheckOpacitySupported: Boolean;
     function CurrentElapsedMs: Int64;
@@ -103,7 +130,8 @@ type
     function ComputeTodayTotalMs(const Task: string): Int64;
     procedure LoadTaskHistory;
     procedure SaveTaskToHistory(const ATask: string);
-    procedure AppendEntry(const ATask: string; AStart, AEnd: TDateTime);
+    procedure AppendEntry(const ATask: string; AStart, AEnd: TDateTime;
+      AudioFiles: TStrings = nil);
     function TodayLogFile: string;
     procedure LoadConfig;
     procedure SaveConfig;
@@ -165,6 +193,21 @@ procedure InstallSubclass(h: HWND); forward;
 procedure SubclassComboEdit(ComboHwnd: HWND); forward;
 function FormatHMinCompact(MsTotal: Int64): string; forward;
 
+procedure DbgLog(const S: string);
+var
+  F: TextFile;
+  P: string;
+begin
+  P := ExtractFilePath(Application.ExeName) + 'dbg.log';
+  AssignFile(F, P);
+  try
+    if FileExists(P) then Append(F) else Rewrite(F);
+    WriteLn(F, FormatDateTime('hh:nn:ss.zzz', Now) + ' ' + S);
+    CloseFile(F);
+  except
+  end;
+end;
+
 procedure TMainForm.FormCreate(Sender: TObject);
 var
   IcoPath: string;
@@ -184,6 +227,10 @@ begin
   FCurrentTask := '';
   FOpacity := 100;
   FOpacitySupported := CheckOpacitySupported;
+  FAudioDir := '';
+  FAudioQuality := aqMid;
+  FAudioRecorder := TAudioRecorder.Create(AppDir);
+  FAudioFilesForSegment := TStringList.Create;
   FHighlightedIdx := -1;
   FSliderLocked := False;
   FLockedMs := 0;
@@ -237,10 +284,16 @@ end;
 
 procedure TMainForm.FormClose(Sender: TObject; var CloseAction: TCloseAction);
 begin
+  if FAudioRecorder <> nil then
+  begin
+    if FAudioRecorder.IsRecording then FAudioRecorder.Stop;
+  end;
   if FRunning then
     StopTask;
   SaveConfig;
   FAllTasks.Free;
+  FreeAndNil(FAudioRecorder);
+  FreeAndNil(FAudioFilesForSegment);
 end;
 
 procedure TMainForm.FormMouseDown(Sender: TObject; Button: TMouseButton;
@@ -266,7 +319,7 @@ end;
 
 procedure TMainForm.FormResize(Sender: TObject);
 const
-  BaseH = 56;
+  BaseH = 80;
   FontBase = 11;
 var
   S: Double;
@@ -282,18 +335,21 @@ begin
   cbTask.SetBounds       (Round(84 * S),  Round(5 * S),  Round(156 * S), Round(21 * S));
   btnStartStop.SetBounds (Round(244 * S), Round(2 * S),  Round(92 * S),  Round(28 * S));
   pbSlider.SetBounds     (Round(4 * S),   Round(32 * S), Round(332 * S), Round(22 * S));
+  btnMic.SetBounds       (Round(4 * S),   Round(56 * S), Round(44 * S),  Round(22 * S));
+  btnSys.SetBounds       (Round(50 * S),  Round(56 * S), Round(44 * S),  Round(22 * S));
+  btnRec.SetBounds       (Round(96 * S),  Round(56 * S), Round(60 * S),  Round(22 * S));
+  lblAudio.SetBounds     (Round(162 * S), Round(60 * S), Round(174 * S), Round(14 * S));
+  lblAudio.Font.Height := NewFont;
   Application.QueueAsyncCall(@DeselectCombo, 0);
 end;
 
 procedure TMainForm.Timer1Timer(Sender: TObject);
 begin
-  // Button always shows the actual running time since segment start,
-  // independent of any manual slider lock — so the user can see live
-  // progress even after rolling the flag back.
   btnStartStop.Caption := 'Сделано' + LineEnding +
     FormatDateTime(TimeFmt, CurrentElapsedMs / 86400000);
   pbSlider.Invalidate;
   RefreshTodayTotal;
+  UpdateAudioStatus;
   if (Now - FLastAlive) * 86400 > 10 then
     UpdateCurrentMarker;
 end;
@@ -438,7 +494,7 @@ function NewWndProc(h: HWND; uMsg: UINT; wParam: WPARAM;
 const
   EdgePx = 4;
   BaseW = 340;
-  BaseH = 56;
+  BaseH = 80;
   AspectRatio: Double = BaseW / BaseH;
   SC_SIZE_CMD = $F000;
 var
@@ -578,13 +634,15 @@ begin
     Exit;
   end;
   EndDT := FTaskStart + Dur / 86400000;
-  AppendEntry(T, FTaskStart, EndDT);
-  // The new segment starts at the cut point — any time the flag was
-  // dragged off becomes the new segment's initial elapsed and keeps
-  // ticking. (Carry-over semantics intentionally restored.)
+  // Stop any active recording so the file is finalized before attach.
+  if FAudioRecorder.IsRecording then StopRecording;
+  AppendEntry(T, FTaskStart, EndDT, FAudioFilesForSegment);
+  FAudioFilesForSegment.Clear;
+  // The new segment starts at the cut point.
   FTaskStart := EndDT;
   FSliderLocked := False;
   FLockedMs := 0;
+  btnRec.Down := False;
   SaveTaskToHistory(T);
   // Clear the task name so the user has to pick or type the next one.
   FCurrentTask := '';
@@ -1475,6 +1533,225 @@ begin
   TasksEditForm.ShowFor(FTasksFile);
 end;
 
+function TMainForm.ResolvedAudioDir: string;
+begin
+  if FAudioDir <> '' then
+    Result := FAudioDir
+  else
+    Result := AppDir + 'audio';
+end;
+
+procedure TMainForm.miAudioDirClick(Sender: TObject);
+var
+  D: string;
+begin
+  D := ResolvedAudioDir;
+  if SelectDirectory('Папка для записей аудио (*.mp3)', '', D) then
+  begin
+    if (D = AppDir + 'audio') or (D = '') then FAudioDir := ''
+    else FAudioDir := D;
+    SaveConfig;
+  end;
+end;
+
+procedure TMainForm.miAudioQClick(Sender: TObject);
+begin
+  if Sender is TMenuItem then
+  begin
+    FAudioQuality := TAudioQuality(TMenuItem(Sender).Tag);
+    TMenuItem(Sender).Checked := True;
+    SaveConfig;
+  end;
+end;
+
+procedure TMainForm.miAudioClick(Sender: TObject);
+var
+  Mics: TStringList;
+  i: Integer;
+  Item: TMenuItem;
+begin
+  // Refresh the mic submenu every time the Audio menu opens.
+  miMic.Clear;
+  Mics := TStringList.Create;
+  try
+    FAudioRecorder.ListMics(Mics);
+    if Mics.Count = 0 then
+    begin
+      Item := TMenuItem.Create(miMic);
+      Item.Caption := '(нет устройств)';
+      Item.Enabled := False;
+      miMic.Add(Item);
+      Exit;
+    end;
+    for i := 0 to Mics.Count - 1 do
+    begin
+      Item := TMenuItem.Create(miMic);
+      Item.Caption := Mics[i];
+      Item.GroupIndex := 11;
+      Item.RadioItem := True;
+      Item.AutoCheck := True;
+      Item.Checked := (Mics[i] = FMicDevice)
+                  or ((FMicDevice = '') and (i = 0));
+      Item.OnClick := @MicMenuClick;
+      miMic.Add(Item);
+    end;
+  finally
+    Mics.Free;
+  end;
+end;
+
+procedure TMainForm.MicMenuClick(Sender: TObject);
+begin
+  if Sender is TMenuItem then
+  begin
+    FMicDevice := TMenuItem(Sender).Caption;
+    SaveConfig;
+    // If recording right now, restart so new device takes effect.
+    if FAudioRecorder.IsRecording then
+    begin
+      StopRecording;
+      StartRecording;
+    end;
+  end;
+end;
+
+procedure TMainForm.btnMicClick(Sender: TObject);
+begin
+  SaveConfig;
+  if FAudioRecorder.IsRecording then
+  begin
+    // Toggling sources while recording: restart with new flags.
+    StopRecording;
+    StartRecording;
+  end;
+end;
+
+procedure TMainForm.btnSysClick(Sender: TObject);
+begin
+  SaveConfig;
+  if FAudioRecorder.IsRecording then
+  begin
+    StopRecording;
+    StartRecording;
+  end;
+end;
+
+procedure TMainForm.btnRecClick(Sender: TObject);
+begin
+  if btnRec.Down then StartRecording
+  else                StopRecording;
+end;
+
+procedure TMainForm.StartRecording;
+var
+  Path: string;
+begin
+  DbgLog('StartRecording enter');
+  try
+    if FAudioRecorder = nil then begin DbgLog('  recorder nil'); Exit; end;
+    if FAudioRecorder.IsRecording then begin DbgLog('  already recording'); Exit; end;
+    if not (btnMic.Down or btnSys.Down) then
+      btnMic.Down := True;
+    if not FAudioRecorder.FFmpegAvailable then
+    begin
+      ShowMessage('ffmpeg.exe не найден. Положите его рядом с программой '
+                + 'или установите в PATH.');
+      btnRec.Down := False;
+      Exit;
+    end;
+    ForceDirectories(ResolvedAudioDir);
+    Path := ResolvedAudioDir + PathDelim +
+            FormatDateTime('yyyymmdd_hhnnss', Now) + '.mp3';
+    DbgLog('  path=' + Path + ' mic=' + BoolToStr(btnMic.Down, True)
+         + ' sys=' + BoolToStr(btnSys.Down, True));
+    if FMicDevice = '' then
+    begin
+      FMicDevice := FAudioRecorder.DetectFirstMic;
+      DbgLog('  detected mic: "' + FMicDevice + '"');
+    end;
+    if FAudioRecorder.Start(Path, btnMic.Down, btnSys.Down,
+         FAudioQuality, FMicDevice) then
+    begin
+      DbgLog('  Start returned True; IsRecording=' + BoolToStr(FAudioRecorder.IsRecording, True));
+      FAudioFilesForSegment.Add(Path);
+      btnRec.Font.Color := clRed;
+      btnRec.Font.Style := [fsBold];
+      btnRec.Caption := #$E2#$97#$8F + ' REC';
+      btnRec.Invalidate;
+      UpdateAudioStatus;
+    end
+    else
+    begin
+      DbgLog('  Start returned False');
+      btnRec.Down := False;
+    end;
+  except
+    on E: Exception do
+    begin
+      DbgLog('  EXCEPTION: ' + E.ClassName + ' / ' + E.Message);
+      ShowMessage('Старт записи: ' + E.ClassName + ' / ' + E.Message);
+      btnRec.Down := False;
+    end;
+  end;
+  DbgLog('StartRecording exit');
+end;
+
+procedure TMainForm.StopRecording;
+begin
+  DbgLog('StopRecording enter');
+  try
+    if FAudioRecorder = nil then begin DbgLog('  recorder nil'); Exit; end;
+    if not FAudioRecorder.IsRecording then
+    begin
+      DbgLog('  not recording, reset buttons');
+      btnRec.Font.Color := clWindowText;
+      btnRec.Font.Style := [];
+      btnRec.Caption := #$E2#$97#$8F + ' REC';
+      btnRec.Invalidate;
+      Exit;
+    end;
+    DbgLog('  calling Stop');
+    FAudioRecorder.Stop;
+    DbgLog('  Stop returned, resetting visuals');
+    btnRec.Font.Color := clWindowText;
+    btnRec.Font.Style := [];
+    btnRec.Caption := #$E2#$97#$8F + ' REC';
+    btnRec.Invalidate;
+    UpdateAudioStatus;
+  except
+    on E: Exception do
+    begin
+      DbgLog('  EXCEPTION: ' + E.ClassName + ' / ' + E.Message);
+      ShowMessage('Стоп записи: ' + E.ClassName + ' / ' + E.Message);
+    end;
+  end;
+  DbgLog('StopRecording exit');
+end;
+
+procedure TMainForm.UpdateAudioStatus;
+var
+  S: string;
+  Sec, M, Sc: Integer;
+begin
+  if FAudioRecorder.IsRecording then
+  begin
+    Sec := FAudioRecorder.ElapsedSec;
+    M := Sec div 60;
+    Sc := Sec mod 60;
+    S := Format('запись %.2d:%.2d', [M, Sc]);
+    if FAudioFilesForSegment.Count > 1 then
+      S := S + Format(' (#%d)', [FAudioFilesForSegment.Count]);
+  end
+  else
+  begin
+    if FAudioFilesForSegment.Count > 0 then
+      S := Format('к задаче: %d файл(ов)', [FAudioFilesForSegment.Count])
+    else
+      S := '';
+  end;
+  lblAudio.Caption := S;
+end;
+
 function TMainForm.ResolvedLazyCureDir: string;
 begin
   if FLazyCureDir <> '' then
@@ -1651,9 +1928,9 @@ begin
       S := Root.GetAttribute('top');    if TryStrToInt(S, V) then Top := V;
       S := Root.GetAttribute('width');  if TryStrToInt(S, V) then Width  := V;
       S := Root.GetAttribute('height'); if TryStrToInt(S, V) then Height := V;
-      // Normalize: in v2 the form is 340x56 (slider added below).
-      if Height < 56 then Height := 56;
-      Width := Round(Height * 340 / 56);
+      // Normalize: v3 form is 340x80 (audio row added below the slider).
+      if Height < 80 then Height := 80;
+      Width := Round(Height * 340 / 80);
       S := Root.GetAttribute('topMost');
       if S = '0' then
         miTopMost.Checked := False;
@@ -1664,6 +1941,20 @@ begin
       if TryStrToInt(S, V) and (V >= 10) and (V <= 100) then
         FOpacity := V;
       FLazyCureDir := Root.GetAttribute('lazyCureDir');
+      FAudioDir := Root.GetAttribute('audioDir');
+      FMicDevice := Root.GetAttribute('micDevice');
+      S := Root.GetAttribute('audioQuality');
+      if TryStrToInt(S, V) and (V >= 0) and (V <= 2) then
+        FAudioQuality := TAudioQuality(V);
+      S := Root.GetAttribute('recMic');
+      if S = '0' then btnMic.Down := False else btnMic.Down := True;
+      S := Root.GetAttribute('recSys');
+      if S = '1' then btnSys.Down := True else btnSys.Down := False;
+      case FAudioQuality of
+        aqLow:  miAudioQLow.Checked := True;
+        aqMid:  miAudioQMid.Checked := True;
+        aqHigh: miAudioQHigh.Checked := True;
+      end;
     except
     end;
   finally
@@ -1691,6 +1982,15 @@ begin
     Root.SetAttribute('opacity', IntToStr(FOpacity));
     if FLazyCureDir <> '' then
       Root.SetAttribute('lazyCureDir', FLazyCureDir);
+    if FAudioDir <> '' then
+      Root.SetAttribute('audioDir', FAudioDir);
+    if FMicDevice <> '' then
+      Root.SetAttribute('micDevice', FMicDevice);
+    Root.SetAttribute('audioQuality', IntToStr(Ord(FAudioQuality)));
+    if btnMic.Down then Root.SetAttribute('recMic', '1')
+                   else Root.SetAttribute('recMic', '0');
+    if btnSys.Down then Root.SetAttribute('recSys', '1')
+                   else Root.SetAttribute('recSys', '0');
     WriteXMLFile(Doc, FConfigFile);
   finally
     Doc.Free;
@@ -1828,14 +2128,16 @@ begin
   end;
 end;
 
-procedure TMainForm.AppendEntry(const ATask: string; AStart, AEnd: TDateTime);
+procedure TMainForm.AppendEntry(const ATask: string; AStart, AEnd: TDateTime;
+  AudioFiles: TStrings = nil);
 
-  procedure WriteSingle(const SDT, EDT: TDateTime);
+  procedure WriteSingle(const SDT, EDT: TDateTime; AttachAudio: Boolean);
   var
     Doc: TXMLDocument;
-    Root, El: TDOMElement;
+    Root, El, AEl: TDOMElement;
     LogFile: string;
     DurMS: Int64;
+    i: Integer;
   begin
     if EDT <= SDT then Exit;
     // Per-day file based on the segment's START date (not today's date,
@@ -1863,6 +2165,13 @@ procedure TMainForm.AppendEntry(const ATask: string; AStart, AEnd: TDateTime);
       El.SetAttribute('end',   FormatDateTime(IsoFmt, EDT));
       El.SetAttribute('duration', FormatDateTime(TimeFmt, EDT - SDT));
       El.SetAttribute('durationMs', IntToStr(DurMS));
+      if AttachAudio and (AudioFiles <> nil) then
+        for i := 0 to AudioFiles.Count - 1 do
+        begin
+          AEl := Doc.CreateElement('audio');
+          AEl.SetAttribute('path', AudioFiles[i]);
+          El.AppendChild(AEl);
+        end;
       Root.AppendChild(El);
       WriteXMLFile(Doc, LogFile);
     finally
@@ -1872,21 +2181,21 @@ procedure TMainForm.AppendEntry(const ATask: string; AStart, AEnd: TDateTime);
 
 var
   CurStart, NextMidnight: TDateTime;
+  IsFirst: Boolean;
 begin
-  // Split the segment at every midnight so it lands in the right
-  // daily file(s). A task that started yesterday and ended today
-  // produces two entries: one in yesterday's file (up to 24:00) and
-  // one in today's file (from 00:00).
   CurStart := AStart;
+  IsFirst := True;
   while CurStart < AEnd do
   begin
     NextMidnight := Trunc(CurStart) + 1.0;
     if AEnd <= NextMidnight then
     begin
-      WriteSingle(CurStart, AEnd);
+      // Attach audio only to the first (or only) chunk to avoid duplication.
+      WriteSingle(CurStart, AEnd, IsFirst);
       Break;
     end;
-    WriteSingle(CurStart, NextMidnight);
+    WriteSingle(CurStart, NextMidnight, IsFirst);
+    IsFirst := False;
     CurStart := NextMidnight;
   end;
 end;
