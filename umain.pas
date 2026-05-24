@@ -27,6 +27,10 @@ type
     miAudioQLow: TMenuItem;
     miAudioQMid: TMenuItem;
     miAudioQHigh: TMenuItem;
+    miVadSens: TMenuItem;
+    miVadHigh: TMenuItem;
+    miVadMid: TMenuItem;
+    miVadLow: TMenuItem;
     pbSlider: TPaintBox;
     miBuildInfo: TMenuItem;
     miSepBuild: TMenuItem;
@@ -79,6 +83,7 @@ type
     procedure btnSysClick(Sender: TObject);
     procedure btnRecClick(Sender: TObject);
     procedure btnVADClick(Sender: TObject);
+    procedure miVadSensClick(Sender: TObject);
     procedure btnMicDropClick(Sender: TObject);
     procedure MicDropMenuClick(Sender: TObject);
     procedure miStatsClick(Sender: TObject);
@@ -114,6 +119,8 @@ type
     FAudioQuality: TAudioQuality;
     FAudioRecorder: TAudioRecorder;
     FAudioFilesForSegment: TStringList;
+    FLastAudioFileSize: Int64;
+    FAudioUnchangedTicks: Integer;
     FMicDevice: string;
     FMicDropMenu: TPopupMenu;
     procedure RefreshMicDropdownVisibility;
@@ -1667,6 +1674,22 @@ begin
   end;
 end;
 
+procedure TMainForm.miVadSensClick(Sender: TObject);
+var
+  Mi: TMenuItem;
+begin
+  Mi := Sender as TMenuItem;
+  Mi.Checked := True;
+  if FAudioRecorder <> nil then
+    FAudioRecorder.FVadSensitivity := Mi.Tag;
+  SaveConfig;
+  if FAudioRecorder.IsRecording then
+  begin
+    StopRecording;
+    StartRecording;
+  end;
+end;
+
 procedure TMainForm.btnRecClick(Sender: TObject);
 begin
   DbgLog('btnRecClick enter Down=' + BoolToStr(btnRec.Down, True));
@@ -1843,9 +1866,14 @@ end;
 
 procedure TMainForm.UpdateAudioStatus;
 var
-  S: string;
+  S, RecCaption: string;
   Sec, M, Sc: Integer;
+  CurFile: string;
+  CurSize: Int64;
+  FS: TFileStream;
+  Paused: Boolean;
 begin
+  Paused := False;
   if FAudioRecorder.IsRecording then
   begin
     Sec := FAudioRecorder.ElapsedSec;
@@ -1854,9 +1882,43 @@ begin
     S := Format('запись %.2d:%.2d', [M, Sc]);
     if FAudioFilesForSegment.Count > 1 then
       S := S + Format(' (#%d)', [FAudioFilesForSegment.Count]);
+
+    // VAD pause indicator: poll the output file size — if it hasn't
+    // grown since the last tick, silenceremove is currently dropping
+    // samples (i.e. paused on silence).
+    if btnVAD.Down then
+    begin
+      CurFile := FAudioRecorder.CurrentFile;
+      CurSize := -1;
+      if (CurFile <> '') and FileExists(CurFile) then
+      try
+        FS := TFileStream.Create(CurFile, fmOpenRead or fmShareDenyNone);
+        try CurSize := FS.Size finally FS.Free end;
+      except end;
+      // Need a couple of unchanged ticks to call it paused (file flushes
+      // happen in bursts).
+      if (CurSize > 0) and (CurSize = FLastAudioFileSize) then
+      begin
+        Inc(FAudioUnchangedTicks);
+        if FAudioUnchangedTicks >= 2 then Paused := True;
+      end
+      else
+        FAudioUnchangedTicks := 0;
+      FLastAudioFileSize := CurSize;
+    end;
+
+    if Paused then RecCaption := #$E2#$8F#$B8#$E2#$8F#$B8 + ' PAUSE'  // ⏸⏸
+    else            RecCaption := #$E2#$97#$8F + ' REC';              // ●
+    if btnRec.Caption <> RecCaption then
+    begin
+      btnRec.Caption := RecCaption;
+      btnRec.Invalidate;
+    end;
   end
   else
   begin
+    FLastAudioFileSize := -1;
+    FAudioUnchangedTicks := 0;
     if FAudioFilesForSegment.Count > 0 then
       S := Format('к задаче: %d файл(ов)', [FAudioFilesForSegment.Count])
     else
@@ -2065,6 +2127,18 @@ begin
       if S = '1' then btnSys.Down := True else btnSys.Down := False;
       S := Root.GetAttribute('vad');
       if S = '1' then btnVAD.Down := True else btnVAD.Down := False;
+      S := Root.GetAttribute('vadSens');
+      if TryStrToInt(S, V) then
+      begin
+        if FAudioRecorder <> nil then
+          FAudioRecorder.FVadSensitivity := V;
+        case V of
+          -8: miVadHigh.Checked := True;
+           8: miVadLow.Checked  := True;
+        else
+          miVadMid.Checked := True;
+        end;
+      end;
       case FAudioQuality of
         aqLow:  miAudioQLow.Checked := True;
         aqMid:  miAudioQMid.Checked := True;
@@ -2108,6 +2182,8 @@ begin
                    else Root.SetAttribute('recSys', '0');
     if btnVAD.Down then Root.SetAttribute('vad', '1')
                    else Root.SetAttribute('vad', '0');
+    if FAudioRecorder <> nil then
+      Root.SetAttribute('vadSens', IntToStr(FAudioRecorder.FVadSensitivity));
     WriteXMLFile(Doc, FConfigFile);
   finally
     Doc.Free;

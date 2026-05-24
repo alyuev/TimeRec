@@ -251,6 +251,9 @@ var
   BytesPerFrame: Integer;
   Silence: array of Byte;
   ComInited: Boolean;
+  StartTicks, NowTicks: QWord;
+  DeliveredFrames, ExpectedFrames, MissingFrames: Int64;
+  ChunkBytes: Integer;
 begin
   ComInited := False;
   Fmt := nil;
@@ -302,6 +305,9 @@ begin
     // Format & success — signal owner.
     SetEvent(FOwner.FFormatReady);
 
+    StartTicks := GetTickCount64;
+    DeliveredFrames := 0;
+
     while not Terminated do
     begin
       if WaitForSingleObject(FStopEvent, 10) = WAIT_OBJECT_0 then Break;
@@ -316,8 +322,6 @@ begin
 
         if (Flags and AUDCLNT_BUFFERFLAGS_SILENT) <> 0 then
         begin
-          // Emit silence of equivalent size so the downstream encoder
-          // gets a continuous stream and timing stays in sync.
           if Length(Silence) < Integer(Frames) * BytesPerFrame then
             SetLength(Silence, Integer(Frames) * BytesPerFrame);
           FillChar(Silence[0], Integer(Frames) * BytesPerFrame, 0);
@@ -327,7 +331,28 @@ begin
         else if Assigned(FOwner.FOnData) then
           FOwner.FOnData(Data, Integer(Frames) * BytesPerFrame);
 
+        Inc(DeliveredFrames, Frames);
         Capture.ReleaseBuffer(Frames);
+      end;
+
+      // Windows can stop pushing packets entirely when nothing's playing.
+      // Emit silence in small, fixed chunks on a steady cadence — bursty
+      // catch-up writes produced audible jitter through amix downstream.
+      // We cap each tick to one period's worth (~10 ms) so the stream
+      // stays smooth even if we briefly fall behind.
+      NowTicks := GetTickCount64;
+      ExpectedFrames := Int64(NowTicks - StartTicks) * FOwner.FSampleRate div 1000;
+      MissingFrames := ExpectedFrames - DeliveredFrames;
+      if MissingFrames > 0 then
+      begin
+        if MissingFrames > FOwner.FSampleRate div 100 then
+          MissingFrames := FOwner.FSampleRate div 100;  // cap at 10 ms
+        ChunkBytes := Integer(MissingFrames) * BytesPerFrame;
+        if Length(Silence) < ChunkBytes then SetLength(Silence, ChunkBytes);
+        FillChar(Silence[0], ChunkBytes, 0);
+        if Assigned(FOwner.FOnData) then
+          FOwner.FOnData(@Silence[0], ChunkBytes);
+        Inc(DeliveredFrames, MissingFrames);
       end;
     end;
 

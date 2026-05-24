@@ -223,6 +223,31 @@ object MainForm: TMainForm
           OnClick = miAudioQClick
         end
       end
+      object miVadSens: TMenuItem
+        Caption = #1063#1091#1074#1089#1090#1074#1080#1090#1077#1083#1100#1085#1086#1089#1090#1100' '#1040#1074#1090#1086#1076#1077#1090#1077#1082#1090#1072
+        object miVadHigh: TMenuItem
+          Caption = #1042#1099#1089#1086#1082#1072#1103' (-8 dB)'
+          GroupIndex = 11
+          RadioItem = True
+          Tag = -8
+          OnClick = miVadSensClick
+        end
+        object miVadMid: TMenuItem
+          Caption = #1057#1088#1077#1076#1085#1103#1103' (0 dB)'
+          GroupIndex = 11
+          RadioItem = True
+          Checked = True
+          Tag = 0
+          OnClick = miVadSensClick
+        end
+        object miVadLow: TMenuItem
+          Caption = #1053#1080#1079#1082#1072#1103' (+8 dB)'
+          GroupIndex = 11
+          RadioItem = True
+          Tag = 8
+          OnClick = miVadSensClick
+        end
+      end
     end
     object miHideFromTaskBar: TMenuItem
       Caption = #1057#1082#1088#1099#1090#1100' '#1080#1079' '#1087#1072#1085#1077#1083#1080' '#1079#1072#1076#1072#1095
