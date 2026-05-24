@@ -6,7 +6,8 @@ interface
 
 uses
   Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, ComCtrls, Menus,
-  Buttons, Graphics, LCLType, LMessages, Dialogs, Windows, Types, uaudio;
+  Buttons, Graphics, LCLType, LMessages, Dialogs, Windows, Types, uaudio,
+  uaudiolist;
 
 type
   TMainForm = class(TForm)
@@ -17,6 +18,7 @@ type
     btnSys: TSpeedButton;
     btnRec: TSpeedButton;
     btnVAD: TSpeedButton;
+    btnAudioList: TSpeedButton;
     cbTask: TComboBox;
     lblTodayTotal: TLabel;
     lblAudio: TLabel;
@@ -84,6 +86,8 @@ type
     procedure btnRecClick(Sender: TObject);
     procedure btnVADClick(Sender: TObject);
     procedure miVadSensClick(Sender: TObject);
+    procedure btnAudioListClick(Sender: TObject);
+    procedure AudioListHidden(Sender: TObject);
     procedure btnMicDropClick(Sender: TObject);
     procedure MicDropMenuClick(Sender: TObject);
     procedure miStatsClick(Sender: TObject);
@@ -121,9 +125,11 @@ type
     FAudioFilesForSegment: TStringList;
     FLastAudioFileSize: Int64;
     FAudioUnchangedTicks: Integer;
+    FAudioListForm: TAudioListForm;
     FMicDevice: string;
     FMicDropMenu: TPopupMenu;
     procedure RefreshMicDropdownVisibility;
+    procedure AnchorAudioListForm;
     procedure StartRecording;
     procedure StopRecording;
     procedure UpdateAudioStatus;
@@ -369,6 +375,7 @@ begin
   lblAudio.SetBounds     (Round(176 * S), Round(60 * S), Round(160 * S), Round(14 * S));
   lblAudio.Font.Height := NewFont;
   Application.QueueAsyncCall(@DeselectCombo, 0);
+  AnchorAudioListForm;
 end;
 
 procedure TMainForm.Timer1Timer(Sender: TObject);
@@ -378,6 +385,7 @@ begin
   pbSlider.Invalidate;
   RefreshTodayTotal;
   UpdateAudioStatus;
+  AnchorAudioListForm;
   if (Now - FLastAlive) * 86400 > 10 then
     UpdateCurrentMarker;
 end;
@@ -1672,6 +1680,53 @@ begin
     StopRecording;
     StartRecording;
   end;
+end;
+
+procedure TMainForm.AudioListHidden(Sender: TObject);
+begin
+  btnAudioList.Caption := #$E2#$96#$BE;  // ▾
+end;
+
+procedure TMainForm.btnAudioListClick(Sender: TObject);
+begin
+  if FAudioListForm = nil then
+  begin
+    FAudioListForm := TAudioListForm.CreateNew(Self);
+    FAudioListForm.SetDirs(ResolvedAudioDir, FDataDir);
+    FAudioListForm.OnHidden := @AudioListHidden;
+  end;
+  if FAudioListForm.Visible then
+  begin
+    FAudioListForm.Hide;
+    btnAudioList.Caption := #$E2#$96#$BE;  // ▾
+  end
+  else
+  begin
+    FAudioListForm.SetDirs(ResolvedAudioDir, FDataDir);
+    FAudioListForm.RefreshList;
+    AnchorAudioListForm;
+    FAudioListForm.Show;
+    btnAudioList.Caption := #$E2#$96#$B4;  // ▴
+  end;
+end;
+
+procedure TMainForm.AnchorAudioListForm;
+var
+  NewLeft, NewTop, ScrW: Integer;
+begin
+  if (FAudioListForm = nil) or (not FAudioListForm.Visible) then Exit;
+  // Default: pin the list's left to main's left.
+  NewLeft := Left;
+  NewTop  := Top + Height;
+  // If that would push the list off the right edge of the screen,
+  // pin the right edges instead (right of list = right of main).
+  ScrW := Screen.WorkAreaWidth;
+  if NewLeft + FAudioListForm.Width > ScrW then
+    NewLeft := (Left + Width) - FAudioListForm.Width;
+  if NewLeft < 0 then NewLeft := 0;
+  if (FAudioListForm.Left <> NewLeft) or (FAudioListForm.Top <> NewTop) then
+    FAudioListForm.SetBounds(NewLeft, NewTop,
+      FAudioListForm.Width, FAudioListForm.Height);
 end;
 
 procedure TMainForm.miVadSensClick(Sender: TObject);

@@ -38,7 +38,9 @@ type
     FIsFloat: Boolean;
     FFormatReady: THandle;
     FStartError: string;
+    FResetRequested: Boolean;
   public
+    procedure ResetCadence;
     constructor Create;
     destructor Destroy; override;
     function Start: Boolean;
@@ -210,6 +212,11 @@ begin
   Result := (FThread <> nil) and (not FThread.Finished);
 end;
 
+procedure TWasapiLoopback.ResetCadence;
+begin
+  FResetRequested := True;
+end;
+
 { TWasapiLoopThread }
 
 constructor TWasapiLoopThread.Create(AOwner: TWasapiLoopback);
@@ -311,6 +318,23 @@ begin
     while not Terminated do
     begin
       if WaitForSingleObject(FStopEvent, 10) = WAIT_OBJECT_0 then Break;
+
+      if FOwner.FResetRequested then
+      begin
+        FOwner.FResetRequested := False;
+        StartTicks := GetTickCount64;
+        DeliveredFrames := 0;
+        // Drain whatever WASAPI has accumulated while OnData was nil
+        // so we start clean from "now".
+        while True do
+        begin
+          hr := Capture.GetNextPacketSize(PacketLen);
+          if Failed(hr) or (PacketLen = 0) then Break;
+          hr := Capture.GetBuffer(Data, Frames, Flags, nil, nil);
+          if Failed(hr) then Break;
+          Capture.ReleaseBuffer(Frames);
+        end;
+      end;
 
       while True do
       begin

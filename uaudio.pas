@@ -469,12 +469,16 @@ begin
   ActualMic := AnsiString(UTF8Decode(ActualMic));
 
   // If system audio is requested, start WASAPI loopback first so we
-  // know the device's native PCM format to declare to ffmpeg.
+  // know the device's native PCM format to declare to ffmpeg. Note:
+  // OnData is left nil for now — we wire it AFTER ffmpeg has connected
+  // to the named pipe. Otherwise WriteFile blocks on the unconnected
+  // pipe, the WASAPI thread stalls, and Windows drops the initial
+  // packets, producing a ragged opening few seconds in the recording.
   if Sys then
   begin
     if not CreateLoopbackPipe then Exit;
     FLoop := TWasapiLoopback.Create;
-    FLoop.OnData := @OnLoopData;
+    FLoop.OnData := nil;
     if not FLoop.Start then
     begin
       FreeAndNil(FLoop);
@@ -534,7 +538,12 @@ begin
   //   -45..-30 (e.g. bluetooth HFP)                → +7  dB
   //   > -30                                        → +3  dB
   // FVadSensitivity (-10..+10 dB) is a user-tunable bias on top.
-  ThresholdDb := -32;
+  // Default threshold. For sys-only-with-VAD we can be permissive —
+  // WASAPI loopback produces pure zeros during silence, so quiet
+  // musical passages need a lower threshold to survive (-32 dB cut
+  // typical music dialogue/quiet sections).
+  if Sys and not Mic then ThresholdDb := -55
+  else                    ThresholdDb := -32;
   if AutoPauseOnSilence and Mic then
   begin
     NoiseFloorDb := CalibrateMicNoiseFloorDb(ActualMic);
@@ -611,9 +620,16 @@ begin
 
     // If we have a named pipe waiting, accept ffmpeg's connection on
     // a background thread so we can time out instead of hanging.
+    // Only after the pipe is connected do we route WASAPI samples
+    // into it — see comment above the FLoop.Start call.
     if (FPipeHandle <> INVALID_HANDLE_VALUE) and Sys then
     begin
       AcceptLoopbackConnection;
+      if (FLoop <> nil) and (FPipeHandle <> INVALID_HANDLE_VALUE) then
+      begin
+        FLoop.ResetCadence;
+        FLoop.OnData := @OnLoopData;
+      end;
     end;
 
     Result := True;
