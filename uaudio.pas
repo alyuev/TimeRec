@@ -27,8 +27,16 @@ type
     FLogPath: string;
     FPipeHandle: THandle;
     FPipeName: string;
+    FCurrentRmsDb: Double;
+    FVadThresholdDb: Double;
+    FVadSilent: Boolean;
+    FNeedTrimPostPass: Boolean;
+    FTrimThresholdDb: Double;
   public
     FVadSensitivity: Integer;  // -10..+10 dB bias added to calibrated threshold
+    function CurrentRmsDb: Double;
+    function VadThresholdDb: Double;
+    function VadIsSilent: Boolean;
   private
     function FindFFmpeg: string;
     procedure OnLoopData(Data: Pointer; Bytes: Integer);
@@ -36,6 +44,7 @@ type
     function CreateLoopbackPipe: Boolean;
     procedure ClosePipe;
     procedure AcceptLoopbackConnection;
+    procedure TrimSilencePostPass;
   public
     function CalibrateMicNoiseFloorDb(const MicDevice: string): Double;
   private
@@ -84,6 +93,23 @@ begin
   FWriteLock := TCriticalSection.Create;
   FLogPath := IncludeTrailingPathDelimiter(FAppDir) + 'ffmpeg_audio.log';
   FPipeHandle := INVALID_HANDLE_VALUE;
+  FCurrentRmsDb := -100;
+  FVadThresholdDb := -32;
+end;
+
+function TAudioRecorder.CurrentRmsDb: Double;
+begin
+  Result := FCurrentRmsDb;
+end;
+
+function TAudioRecorder.VadThresholdDb: Double;
+begin
+  Result := FVadThresholdDb;
+end;
+
+function TAudioRecorder.VadIsSilent: Boolean;
+begin
+  Result := FVadSilent;
 end;
 
 procedure TAudioRecorder.AppendLog(const S: string);
@@ -114,33 +140,61 @@ end;
 procedure TStderrDrainThread.Execute;
 var
   Buf: array[0..2047] of Byte;
-  N: LongInt;
-  S: AnsiString;
+  N, i, LineStart: LongInt;
+  S, Line, Frag, Tail: AnsiString;
+  V: Double;
+  Fmt: TFormatSettings;
+  HasErr: Boolean;
 begin
+  Frag := '';
+  Fmt := DefaultFormatSettings;
+  Fmt.DecimalSeparator := '.';
   while not Terminated do
   begin
-    if (FOwner.FProcess = nil) or (not FOwner.FProcess.Running) then
-    begin
-      // Drain any remaining bytes after exit, then leave.
-      if FOwner.FProcess <> nil then
-        while FOwner.FProcess.Stderr.NumBytesAvailable > 0 do
-        begin
-          N := FOwner.FProcess.Stderr.Read(Buf, Min(SizeOf(Buf), FOwner.FProcess.Stderr.NumBytesAvailable));
-          if N > 0 then
-          begin
-            SetLength(S, N); Move(Buf[0], S[1], N);
-            FOwner.AppendLog('[ffmpeg] ' + S);
-          end;
-        end;
-      Exit;
-    end;
+    if (FOwner.FProcess = nil) or (not FOwner.FProcess.Running) then Exit;
     if FOwner.FProcess.Stderr.NumBytesAvailable > 0 then
     begin
-      N := FOwner.FProcess.Stderr.Read(Buf, Min(SizeOf(Buf), FOwner.FProcess.Stderr.NumBytesAvailable));
+      N := FOwner.FProcess.Stderr.Read(Buf,
+        Min(SizeOf(Buf), FOwner.FProcess.Stderr.NumBytesAvailable));
       if N > 0 then
       begin
         SetLength(S, N); Move(Buf[0], S[1], N);
-        FOwner.AppendLog('[ffmpeg] ' + S);
+        Frag := Frag + S;
+        // Split on \n, parse each complete line.
+        LineStart := 1;
+        for i := 1 to Length(Frag) do
+          if Frag[i] = #10 then
+          begin
+            Line := Copy(Frag, LineStart, i - LineStart);
+            LineStart := i + 1;
+            HasErr := False;
+            if PosEx('silence_start', Line, 1) > 0 then
+            begin
+              FOwner.FVadSilent := True;
+              FOwner.AppendLog('[ffmpeg] ' + Line);
+            end
+            else if PosEx('silence_end', Line, 1) > 0 then
+            begin
+              FOwner.FVadSilent := False;
+              FOwner.AppendLog('[ffmpeg] ' + Line);
+            end
+            else
+            begin
+              N := PosEx('RMS_level=', Line, 1);
+              if N > 0 then
+              begin
+                Tail := Copy(Line, N + Length('RMS_level='), MaxInt);
+                if (Tail = '-inf') or (Copy(Tail, 1, 4) = '-inf') then
+                  FOwner.FCurrentRmsDb := -100
+                else if TryStrToFloat(Trim(Tail), V, Fmt) then
+                  FOwner.FCurrentRmsDb := V;
+              end
+              else
+                HasErr := Length(Line) > 0;
+            end;
+            if HasErr then FOwner.AppendLog('[ffmpeg] ' + Line);
+          end;
+        if LineStart > 1 then Frag := Copy(Frag, LineStart, MaxInt);
       end;
     end
     else
@@ -270,6 +324,76 @@ begin
   Result := Rms[i];
   AppendLog(Format('Calibration: %d samples min=%.1f p20=%.1f med=%.1f max=%.1f',
     [Length(Rms), Rms[0], Result, Rms[Length(Rms) div 2], Rms[High(Rms)]]));
+end;
+
+function FileSize2(const P: string): Int64;
+var FS: TFileStream;
+begin
+  Result := 0;
+  if not FileExists(P) then Exit;
+  try
+    FS := TFileStream.Create(P, fmOpenRead or fmShareDenyNone);
+    try Result := FS.Size finally FS.Free end;
+  except end;
+end;
+
+procedure TAudioRecorder.TrimSilencePostPass;
+// After recording is stopped, re-encode the file with silenceremove
+// to trim leading/trailing/inter silences. The live recording graph
+// can't apply silenceremove without stalling the filter scheduler.
+var
+  P: TProcess;
+  TmpPath, ThrStr: string;
+  i: Integer;
+begin
+  if not FNeedTrimPostPass then Exit;
+  if not FileExists(FOutputFile) then Exit;
+  TmpPath := FOutputFile + '.trim.mp3';
+  ThrStr := StringReplace(FloatToStrF(FTrimThresholdDb, ffFixed, 5, 1),
+                          ',', '.', []);
+  AppendLog(Format('Post-trim: %s with threshold %s dB', [FOutputFile, ThrStr]));
+  P := TProcess.Create(nil);
+  try
+    P.Executable := FindFFmpeg;
+    P.Parameters.Add('-y');
+    P.Parameters.Add('-hide_banner');
+    P.Parameters.Add('-nostats');
+    P.Parameters.Add('-loglevel'); P.Parameters.Add('error');
+    P.Parameters.Add('-i'); P.Parameters.Add(FOutputFile);
+    P.Parameters.Add('-af');
+    P.Parameters.Add(
+      'silenceremove=start_periods=1:start_duration=0.05:start_threshold=' +
+      ThrStr + 'dB:stop_periods=-1:stop_duration=0.7:stop_threshold=' +
+      ThrStr + 'dB:detection=rms:window=0.4,asetpts=N/SR/TB');
+    P.Parameters.Add('-c:a'); P.Parameters.Add('libmp3lame');
+    P.Parameters.Add('-q:a'); P.Parameters.Add('5');
+    P.Parameters.Add(TmpPath);
+    P.Options := [poUsePipes, poNoConsole];
+    try
+      P.Execute;
+      // Wait up to 15s (file can be several MB).
+      for i := 1 to 150 do
+      begin
+        if not P.Running then Break;
+        Sleep(100);
+      end;
+      if P.Running then
+        try P.Terminate(0); except end;
+    except
+      on E: Exception do
+        AppendLog('Post-trim exception: ' + E.Message);
+    end;
+  finally
+    P.Free;
+  end;
+  if FileExists(TmpPath) and (FileSize2(TmpPath) > 256) then
+  begin
+    try SysUtils.DeleteFile(FOutputFile); except end;
+    if not RenameFile(TmpPath, FOutputFile) then
+      AppendLog('Post-trim: rename failed');
+  end
+  else
+    AppendLog('Post-trim produced no usable output, keeping original');
 end;
 
 function TAudioRecorder.CreateLoopbackPipe: Boolean;
@@ -446,7 +570,7 @@ function TAudioRecorder.Start(const OutFile: string; Mic, Sys: Boolean;
   AutoPauseOnSilence: Boolean): Boolean;
 var
   Bitrate, InputCount, SysIdx, MicIdx: Integer;
-  ActualMic, SysFmt, FilterExpr, SilenceChain: string;
+  ActualMic, SysFmt, SilenceChain, GraphPre, SilenceDetect: string;
   NoiseFloorDb, ThresholdDb: Double;
 begin
   Result := False;
@@ -566,10 +690,18 @@ begin
     else
       AppendLog('Calibration failed, using default threshold -32 dB');
   end;
+  FVadThresholdDb := ThresholdDb;
+  FCurrentRmsDb := -100;
+  FVadSilent := True;  // assume silent until silencedetect tells us otherwise
   if AutoPauseOnSilence then
   begin
+    // start_periods=1 trims leading silence; stop_periods=-1 cuts all
+    // subsequent silences. Same threshold on both ends keeps resume
+    // behaviour symmetric. asetpts renumbers so the mp3 muxer sees a
+    // continuous timestamp series.
     SilenceChain := ',silenceremove=' +
-      'start_periods=0:' +
+      'start_periods=1:start_duration=0.05:start_threshold=' +
+      StringReplace(FloatToStrF(ThresholdDb, ffFixed, 5, 1), ',', '.', []) + 'dB:' +
       'stop_periods=-1:stop_duration=0.7:stop_threshold=' +
       StringReplace(FloatToStrF(ThresholdDb, ffFixed, 5, 1), ',', '.', []) +
       'dB:detection=rms:window=0.4,asetpts=N/SR/TB';
@@ -577,32 +709,38 @@ begin
   else
     SilenceChain := '';
 
+  // Build a complex filter graph that produces two labelled outputs:
+  //   [mixclean] — post-mix, post-silenceremove (or just post-mix if
+  //                VAD is off) — gets muxed to the mp3 file.
+  //   [det]      — post-mix, fed through silencedetect → anullsink.
+  //                Routed to a second null output so ffmpeg's per-
+  //                output scheduler runs it at real time, independent
+  //                of however the mp3 muxer paces itself during cuts.
+  // The mp3 output cannot use -af on a complex-filtered stream, so
+  // silenceremove has to live inside the filter graph.
   if (SysIdx >= 0) and (MicIdx >= 0) then
-  begin
-    // sys passes through untouched. mic gets only mild aresample for
-    // dshow clock drift. amix normalize=0 keeps original levels — sys
-    // is mostly silence, so mic comes through cleanly. No agate (it
-    // either killed quiet mics or chopped noisy ones); no post-mix
-    // volume boost (that clipped). silenceremove uses RMS window
-    // detection downstream for VAD on noisy mics.
-    FilterExpr := Format(
+    GraphPre := Format(
       '[%d:a]anull[s];' +
       '[%d:a]aresample=async=1000:first_pts=0[m];' +
       '[s][m]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0',
-      [SysIdx, MicIdx]) + SilenceChain;
-    FProcess.Parameters.Add('-filter_complex');
-    FProcess.Parameters.Add(FilterExpr);
-  end
-  else if AutoPauseOnSilence then
-  begin
-    // mic-only with VAD: just silenceremove.
-    FProcess.Parameters.Add('-af');
-    FProcess.Parameters.Add(Copy(SilenceChain, 2, MaxInt));
-  end;
+      [SysIdx, MicIdx])
+  else if SysIdx >= 0 then
+    GraphPre := Format('[%d:a]anull', [SysIdx])
+  else
+    GraphPre := Format('[%d:a]aresample=async=1000:first_pts=0', [MicIdx]);
 
+  // Record the full mix as-is during the session. When VAD is on,
+  // silenceremove is applied later as a post-pass (TrimSilencePostPass)
+  // — putting it into the live graph starves the mp3 muxer during
+  // silence and stalls ffmpeg's filter scheduler.
+  FProcess.Parameters.Add('-filter_complex');
+  FProcess.Parameters.Add(GraphPre + '[mixclean]');
+  FProcess.Parameters.Add('-map'); FProcess.Parameters.Add('[mixclean]');
   FProcess.Parameters.Add('-b:a');
   FProcess.Parameters.Add(IntToStr(Bitrate) + 'k');
   FProcess.Parameters.Add(FOutputFile);
+  FNeedTrimPostPass := AutoPauseOnSilence;
+  FTrimThresholdDb := ThresholdDb;
 
   FProcess.Options := [poUsePipes, poNoConsole];
 
@@ -730,6 +868,9 @@ begin
     try FreeAndNil(FProcess); except FProcess := nil; end;
     AppendLog('--- STOP complete ---');
   end;
+  // Now that the live recording is closed and the file is on disk,
+  // run silenceremove as a post-pass if VAD was on.
+  TrimSilencePostPass;
 end;
 
 function TAudioRecorder.IsRecording: Boolean;
