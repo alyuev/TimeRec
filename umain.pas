@@ -16,6 +16,7 @@ type
     btnMicDrop: TSpeedButton;
     btnSys: TSpeedButton;
     btnRec: TSpeedButton;
+    btnVAD: TSpeedButton;
     cbTask: TComboBox;
     lblTodayTotal: TLabel;
     lblAudio: TLabel;
@@ -77,6 +78,7 @@ type
     procedure btnMicClick(Sender: TObject);
     procedure btnSysClick(Sender: TObject);
     procedure btnRecClick(Sender: TObject);
+    procedure btnVADClick(Sender: TObject);
     procedure btnMicDropClick(Sender: TObject);
     procedure MicDropMenuClick(Sender: TObject);
     procedure miStatsClick(Sender: TObject);
@@ -356,7 +358,8 @@ begin
   btnMicDrop.SetBounds   (Round(32 * S),  Round(56 * S), Round(12 * S),  Round(22 * S));
   btnSys.SetBounds       (Round(48 * S),  Round(56 * S), Round(28 * S),  Round(22 * S));
   btnRec.SetBounds       (Round(80 * S),  Round(56 * S), Round(60 * S),  Round(22 * S));
-  lblAudio.SetBounds     (Round(146 * S), Round(60 * S), Round(190 * S), Round(14 * S));
+  btnVAD.SetBounds       (Round(144 * S), Round(56 * S), Round(28 * S),  Round(22 * S));
+  lblAudio.SetBounds     (Round(176 * S), Round(60 * S), Round(160 * S), Round(14 * S));
   lblAudio.Font.Height := NewFont;
   Application.QueueAsyncCall(@DeselectCombo, 0);
 end;
@@ -1654,6 +1657,16 @@ begin
   end;
 end;
 
+procedure TMainForm.btnVADClick(Sender: TObject);
+begin
+  SaveConfig;
+  if FAudioRecorder.IsRecording then
+  begin
+    StopRecording;
+    StartRecording;
+  end;
+end;
+
 procedure TMainForm.btnRecClick(Sender: TObject);
 begin
   DbgLog('btnRecClick enter Down=' + BoolToStr(btnRec.Down, True));
@@ -1684,6 +1697,7 @@ begin
   btnMicDrop.Visible := HasMic and (Count > 1);
   btnSys.Visible     := HasMic;
   btnRec.Visible     := HasMic;
+  btnVAD.Visible     := HasMic;
   lblAudio.Visible   := HasMic;
   miAudio.Enabled    := HasMic;
   if HasMic then
@@ -1769,7 +1783,7 @@ begin
       DbgLog('  detected mic: "' + FMicDevice + '"');
     end;
     if FAudioRecorder.Start(Path, btnMic.Down, btnSys.Down,
-         FAudioQuality, FMicDevice) then
+         FAudioQuality, FMicDevice, btnVAD.Down) then
     begin
       DbgLog('  Start returned True; IsRecording=' + BoolToStr(FAudioRecorder.IsRecording, True));
       FAudioFilesForSegment.Add(Path);
@@ -2049,6 +2063,8 @@ begin
       if S = '0' then btnMic.Down := False else btnMic.Down := True;
       S := Root.GetAttribute('recSys');
       if S = '1' then btnSys.Down := True else btnSys.Down := False;
+      S := Root.GetAttribute('vad');
+      if S = '1' then btnVAD.Down := True else btnVAD.Down := False;
       case FAudioQuality of
         aqLow:  miAudioQLow.Checked := True;
         aqMid:  miAudioQMid.Checked := True;
@@ -2090,6 +2106,8 @@ begin
                    else Root.SetAttribute('recMic', '0');
     if btnSys.Down then Root.SetAttribute('recSys', '1')
                    else Root.SetAttribute('recSys', '0');
+    if btnVAD.Down then Root.SetAttribute('vad', '1')
+                   else Root.SetAttribute('vad', '0');
     WriteXMLFile(Doc, FConfigFile);
   finally
     Doc.Free;

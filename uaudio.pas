@@ -27,7 +27,8 @@ type
     constructor Create(const AAppDir: string);
     destructor Destroy; override;
     function Start(const OutFile: string; Mic, Sys: Boolean;
-      Quality: TAudioQuality; const MicDevice: string): Boolean;
+      Quality: TAudioQuality; const MicDevice: string;
+      AutoPauseOnSilence: Boolean = False): Boolean;
     procedure Stop;
     function IsRecording: Boolean;
     function CurrentFile: string;
@@ -189,10 +190,11 @@ begin
 end;
 
 function TAudioRecorder.Start(const OutFile: string; Mic, Sys: Boolean;
-  Quality: TAudioQuality; const MicDevice: string): Boolean;
+  Quality: TAudioQuality; const MicDevice: string;
+  AutoPauseOnSilence: Boolean): Boolean;
 var
   Bitrate, InputCount, SysIdx, MicIdx: Integer;
-  ActualMic, SysFmt: string;
+  ActualMic, SysFmt, FilterExpr, SilenceChain: string;
 begin
   Result := False;
   if IsRecording then Exit;
@@ -261,14 +263,30 @@ begin
     Inc(InputCount);
   end;
 
+  // silenceremove keeps the output stream tight: while the mixed signal
+  // sits below the threshold it produces no samples → the .mp3 doesn't
+  // grow during quiet stretches. As soon as audio rises above the
+  // threshold the stream resumes.
+  if AutoPauseOnSilence then
+    SilenceChain := ',silenceremove=stop_periods=-1:stop_duration=0.5:' +
+                    'stop_threshold=-40dB'
+  else
+    SilenceChain := '';
+
   if (SysIdx >= 0) and (MicIdx >= 0) then
   begin
-    FProcess.Parameters.Add('-filter_complex');
-    FProcess.Parameters.Add(Format(
+    FilterExpr := Format(
       '[%d:a]aresample=async=1:first_pts=0[s];' +
       '[%d:a]aresample=async=1:first_pts=0[m];' +
       '[s][m]amix=inputs=2:duration=shortest:dropout_transition=0,' +
-      'volume=2', [SysIdx, MicIdx]));
+      'volume=2', [SysIdx, MicIdx]) + SilenceChain;
+    FProcess.Parameters.Add('-filter_complex');
+    FProcess.Parameters.Add(FilterExpr);
+  end
+  else if AutoPauseOnSilence then
+  begin
+    FProcess.Parameters.Add('-af');
+    FProcess.Parameters.Add(Copy(SilenceChain, 2, MaxInt));
   end;
 
   FProcess.Parameters.Add('-b:a');

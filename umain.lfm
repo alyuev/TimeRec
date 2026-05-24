@@ -126,10 +126,26 @@ object MainForm: TMainForm
     Flat = True
     OnClick = btnRecClick
   end
+  object btnVAD: TSpeedButton
+    Left = 144
+    Top = 56
+    Width = 28
+    Height = 22
+    AllowAllUp = True
+    GroupIndex = 4
+    Caption = 'A'
+    Font.Height = -15
+    Font.Name = 'Segoe UI Emoji'
+    ParentFont = False
+    Flat = True
+    ShowHint = True
+    Hint = #1040#1074#1090#1086#1087#1072#1091#1079#1072' '#1087#1088#1080' '#1090#1080#1096#1080#1085#1077
+    OnClick = btnVADClick
+  end
   object lblAudio: TLabel
-    Left = 146
+    Left = 176
     Top = 60
-    Width = 190
+    Width = 160
     Height = 14
     Caption = ''
   end
