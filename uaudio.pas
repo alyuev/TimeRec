@@ -687,6 +687,10 @@ begin
     FProcess.Parameters.Add('-ar'); FProcess.Parameters.Add(IntToStr(FLoop.SampleRate));
     FProcess.Parameters.Add('-ac'); FProcess.Parameters.Add(IntToStr(FLoop.Channels));
     FProcess.Parameters.Add('-thread_queue_size'); FProcess.Parameters.Add('4096');
+    // With raw PCM we know the format already — skip ffmpeg's probing
+    // (which otherwise blocks input #2 until #1 has streamed enough).
+    FProcess.Parameters.Add('-probesize');       FProcess.Parameters.Add('32');
+    FProcess.Parameters.Add('-analyzeduration'); FProcess.Parameters.Add('0');
     FProcess.Parameters.Add('-i');  FProcess.Parameters.Add(FPipeName);
     SysIdx := InputCount;
     Inc(InputCount);
@@ -725,6 +729,8 @@ begin
       FProcess.Parameters.Add('-ar'); FProcess.Parameters.Add(IntToStr(FMic.SampleRate));
       FProcess.Parameters.Add('-ac'); FProcess.Parameters.Add(IntToStr(FMic.Channels));
       FProcess.Parameters.Add('-thread_queue_size'); FProcess.Parameters.Add('4096');
+      FProcess.Parameters.Add('-probesize');       FProcess.Parameters.Add('32');
+      FProcess.Parameters.Add('-analyzeduration'); FProcess.Parameters.Add('0');
       FProcess.Parameters.Add('-i'); FProcess.Parameters.Add(FMicPipeName);
     end
     else
