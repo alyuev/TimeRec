@@ -28,6 +28,8 @@ type
     procedure SignalStop;
   end;
 
+  TWasapiMode = (wmRenderLoopback, wmCapture);
+
   TWasapiLoopback = class
   private
     FThread: TWasapiLoopThread;
@@ -39,11 +41,16 @@ type
     FFormatReady: THandle;
     FStartError: string;
     FResetRequested: Boolean;
+    FMode: TWasapiMode;
+    FCaptureName: string;
   public
     procedure ResetCadence;
     constructor Create;
     destructor Destroy; override;
     function Start: Boolean;
+    // Start capture-mode (mic input) for a device matching FriendlyName
+    // (case-insensitive substring match). Returns False if not found.
+    function StartCapture(const FriendlyName: string): Boolean;
     procedure Stop;
     function Running: Boolean;
     property OnData: TWasapiPcmCallback read FOnData write FOnData;
@@ -64,9 +71,16 @@ const
   IID_IMMDeviceEnumerator: TGUID = '{A95664D2-9614-4F35-A746-DE8DB63617E6}';
   IID_IAudioClient:        TGUID = '{1CB9AD4C-DBFA-4c32-B178-C2F568A703B2}';
   IID_IAudioCaptureClient: TGUID = '{C8ADBD64-E71E-48a0-A4DE-185C395CD317}';
+  IID_IPropertyStore:      TGUID = '{886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99}';
+  PKEY_Device_FriendlyName_FMTID: TGUID = '{A45C254E-DF1C-4EFD-8020-67D146A850E0}';
 
   eRender   = 0;
+  eCapture  = 1;
   eConsole  = 0;
+  eCommunications = 2;
+  DEVICE_STATE_ACTIVE = $1;
+  STGM_READ = 0;
+  VT_LPWSTR = 31;
 
   AUDCLNT_SHAREMODE_SHARED      = 0;
   AUDCLNT_STREAMFLAGS_LOOPBACK  = $00020000;
@@ -141,6 +155,28 @@ type
     function GetNextPacketSize(out pNumFramesInNextPacket: UINT): HRESULT; stdcall;
   end;
 
+  PROPERTYKEY = packed record
+    fmtid: TGUID;
+    pid: DWORD;
+  end;
+
+  PROPVARIANT = packed record
+    vt: Word;
+    wReserved1, wReserved2, wReserved3: Word;
+    case Integer of
+      0: (pwszVal: PWideChar);
+      1: (Filler: array[0..15] of Byte);
+  end;
+
+  IPropertyStore = interface(IUnknown)
+    ['{886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99}']
+    function GetCount(out cProps: DWORD): HRESULT; stdcall;
+    function GetAt(iProp: DWORD; out pkey: PROPERTYKEY): HRESULT; stdcall;
+    function GetValue(const key: PROPERTYKEY; out pv: PROPVARIANT): HRESULT; stdcall;
+    function SetValue(const key: PROPERTYKEY; const propvar: PROPVARIANT): HRESULT; stdcall;
+    function Commit: HRESULT; stdcall;
+  end;
+
   IAudioClient = interface(IUnknown)
     ['{1CB9AD4C-DBFA-4c32-B178-C2F568A703B2}']
     function Initialize_(ShareMode: DWORD; StreamFlags: DWORD;
@@ -174,6 +210,13 @@ begin
   Stop;
   if FFormatReady <> 0 then CloseHandle(FFormatReady);
   inherited;
+end;
+
+function TWasapiLoopback.StartCapture(const FriendlyName: string): Boolean;
+begin
+  FMode := wmCapture;
+  FCaptureName := FriendlyName;
+  Result := Start;
 end;
 
 function TWasapiLoopback.Start: Boolean;
@@ -240,6 +283,65 @@ end;
 
 function CoInitializeEx(p: Pointer; coInit: DWORD): HRESULT; stdcall;
   external 'ole32.dll' name 'CoInitializeEx';
+function PropVariantClear(var pv: PROPVARIANT): HRESULT; stdcall;
+  external 'ole32.dll' name 'PropVariantClear';
+
+function GetDeviceFriendlyName(Dev: IMMDevice): string;
+var
+  Store: IPropertyStore;
+  Key: PROPERTYKEY;
+  Pv: PROPVARIANT;
+begin
+  Result := '';
+  if Dev = nil then Exit;
+  if Failed(Dev.OpenPropertyStore(STGM_READ, Store)) then Exit;
+  if Store = nil then Exit;
+  Key.fmtid := PKEY_Device_FriendlyName_FMTID;
+  Key.pid := 14;
+  FillChar(Pv, SizeOf(Pv), 0);
+  if Succeeded(Store.GetValue(Key, Pv)) and (Pv.vt = VT_LPWSTR) and
+     (Pv.pwszVal <> nil) then
+    Result := UTF8Encode(WideString(Pv.pwszVal));
+  PropVariantClear(Pv);
+end;
+
+function FindCaptureDeviceByName(Enum: IMMDeviceEnumerator;
+  const NeedleUtf8: string; out Dev: IMMDevice): Boolean;
+var
+  Coll: IMMDeviceCollection;
+  Count: UINT;
+  i: Integer;
+  D: IMMDevice;
+  Name, NeedleLower: string;
+begin
+  Result := False;
+  Dev := nil;
+  if NeedleUtf8 = '' then
+  begin
+    // Empty name → use default communications endpoint.
+    Result := Succeeded(Enum.GetDefaultAudioEndpoint(eCapture, eCommunications, Dev));
+    Exit;
+  end;
+  if Failed(Enum.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, Coll)) then Exit;
+  if Failed(Coll.GetCount(Count)) then Exit;
+  NeedleLower := LowerCase(NeedleUtf8);
+  for i := 0 to Count - 1 do
+  begin
+    if Failed(Coll.Item(i, D)) then Continue;
+    Name := GetDeviceFriendlyName(D);
+    if Name = '' then Continue;
+    // dshow names look like "Микрофон (Logi C270 HD WebCam)";
+    // MMDevice names look like "Микрофон (Logi C270 HD WebCam)" too,
+    // but on some drivers the prefix differs. Substring match either way.
+    if (Pos(NeedleLower, LowerCase(Name)) > 0) or
+       (Pos(LowerCase(Name), NeedleLower) > 0) then
+    begin
+      Dev := D;
+      Exit(True);
+    end;
+    D := nil;
+  end;
+end;
 
 procedure TWasapiLoopThread.Execute;
 var
@@ -272,8 +374,19 @@ begin
       IID_IMMDeviceEnumerator, Enum);
     if Failed(hr) then begin FOwner.FStartError := 'CoCreateInstance failed'; SetEvent(FOwner.FFormatReady); Exit; end;
 
-    hr := Enum.GetDefaultAudioEndpoint(eRender, eConsole, Dev);
-    if Failed(hr) then begin FOwner.FStartError := 'No default render endpoint'; SetEvent(FOwner.FFormatReady); Exit; end;
+    if FOwner.FMode = wmCapture then
+    begin
+      if not FindCaptureDeviceByName(Enum, FOwner.FCaptureName, Dev) then
+      begin
+        FOwner.FStartError := 'Mic not found: ' + FOwner.FCaptureName;
+        SetEvent(FOwner.FFormatReady); Exit;
+      end;
+    end
+    else
+    begin
+      hr := Enum.GetDefaultAudioEndpoint(eRender, eConsole, Dev);
+      if Failed(hr) then begin FOwner.FStartError := 'No default render endpoint'; SetEvent(FOwner.FFormatReady); Exit; end;
+    end;
 
     hr := Dev.Activate(IID_IAudioClient, CLSCTX_ALL, nil, Client);
     if Failed(hr) then begin FOwner.FStartError := 'Activate IAudioClient failed'; SetEvent(FOwner.FFormatReady); Exit; end;
@@ -295,9 +408,13 @@ begin
     else
       FOwner.FIsFloat := False;
 
-    // 200ms internal buffer; loopback uses shared mode.
-    hr := Client.Initialize_(AUDCLNT_SHAREMODE_SHARED,
-      AUDCLNT_STREAMFLAGS_LOOPBACK, 2000000, 0, Fmt, nil);
+    // 200ms internal buffer.
+    if FOwner.FMode = wmCapture then
+      hr := Client.Initialize_(AUDCLNT_SHAREMODE_SHARED, 0,
+        2000000, 0, Fmt, nil)
+    else
+      hr := Client.Initialize_(AUDCLNT_SHAREMODE_SHARED,
+        AUDCLNT_STREAMFLAGS_LOOPBACK, 2000000, 0, Fmt, nil);
     if Failed(hr) then begin FOwner.FStartError := 'IAudioClient.Initialize failed'; SetEvent(FOwner.FFormatReady); Exit; end;
 
     hr := Client.GetBufferSize(BufFrames);

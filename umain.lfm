@@ -259,6 +259,10 @@ object MainForm: TMainForm
           OnClick = miVadSensClick
         end
       end
+      object miClearMicCal: TMenuItem
+        Caption = #1057#1073#1088#1086#1089#1080#1090#1100' '#1082#1072#1083#1080#1073#1088#1086#1074#1082#1091' '#1084#1080#1082#1088#1086#1092#1086#1085#1086#1074
+        OnClick = miClearMicCalClick
+      end
     end
     object miHideFromTaskBar: TMenuItem
       Caption = #1057#1082#1088#1099#1090#1100' '#1080#1079' '#1087#1072#1085#1077#1083#1080' '#1079#1072#1076#1072#1095

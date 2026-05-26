@@ -33,6 +33,7 @@ type
     miVadHigh: TMenuItem;
     miVadMid: TMenuItem;
     miVadLow: TMenuItem;
+    miClearMicCal: TMenuItem;
     pbSlider: TPaintBox;
     miBuildInfo: TMenuItem;
     miSepBuild: TMenuItem;
@@ -86,6 +87,7 @@ type
     procedure btnRecClick(Sender: TObject);
     procedure btnVADClick(Sender: TObject);
     procedure miVadSensClick(Sender: TObject);
+    procedure miClearMicCalClick(Sender: TObject);
     procedure btnAudioListClick(Sender: TObject);
     procedure AudioListHidden(Sender: TObject);
     procedure btnMicDropClick(Sender: TObject);
@@ -123,6 +125,7 @@ type
     FAudioQuality: TAudioQuality;
     FAudioRecorder: TAudioRecorder;
     FAudioFilesForSegment: TStringList;
+    FMicFloorCache: TStringList;  // "MicDevice=FloorDb" pairs
     FLastAudioFileSize: Int64;
     FAudioUnchangedTicks: Integer;
     FAudioPaused: Boolean;
@@ -159,6 +162,8 @@ type
     function TodayLogFile: string;
     procedure LoadConfig;
     procedure SaveConfig;
+    procedure LoadMicFloorCache(Root: TObject);
+    procedure SaveMicFloorCache(Doc, Root: TObject);
     procedure ApplyComboFilter;
     procedure RestoreFullList;
     procedure ApplyHideFromTaskBar;
@@ -259,6 +264,8 @@ begin
   FAudioQuality := aqMid;
   FAudioRecorder := TAudioRecorder.Create(AppDir);
   FAudioFilesForSegment := TStringList.Create;
+  FMicFloorCache := TStringList.Create;
+  FMicFloorCache.CaseSensitive := False;
   FMicDevice := '';
   FHighlightedIdx := -1;
   FSliderLocked := False;
@@ -328,6 +335,7 @@ begin
   FAllTasks.Free;
   FreeAndNil(FAudioRecorder);
   FreeAndNil(FAudioFilesForSegment);
+  FreeAndNil(FMicFloorCache);
 end;
 
 procedure TMainForm.FormMouseDown(Sender: TObject; Button: TMouseButton;
@@ -1770,6 +1778,26 @@ begin
       FAudioListForm.Width, FAudioListForm.Height);
 end;
 
+procedure TMainForm.miClearMicCalClick(Sender: TObject);
+var
+  N: Integer;
+begin
+  if FMicFloorCache = nil then Exit;
+  N := FMicFloorCache.Count;
+  if N = 0 then
+  begin
+    ShowMessage('Калибровка не сохранена ни для одного микрофона.');
+    Exit;
+  end;
+  if MessageDlg('Сбросить калибровку',
+       Format('Удалить кэшированную калибровку для %d микрофон(ов)? ' +
+              'При следующем старте записи с Автодетектом она будет ' +
+              'произведена заново.', [N]),
+       mtConfirmation, [mbYes, mbNo], 0) <> mrYes then Exit;
+  FMicFloorCache.Clear;
+  SaveConfig;
+end;
+
 procedure TMainForm.miVadSensClick(Sender: TObject);
 var
   Mi: TMenuItem;
@@ -1877,6 +1905,8 @@ end;
 procedure TMainForm.StartRecording;
 var
   Path: string;
+  FormatSettingsDot: TFormatSettings;
+  FloorDb: Double;
 begin
   DbgLog('StartRecording enter');
   try
@@ -1901,6 +1931,20 @@ begin
       FMicDevice := FAudioRecorder.DetectFirstMic;
       DbgLog('  detected mic: "' + FMicDevice + '"');
     end;
+    // Seed the calibrated noise floor from cache to skip the ~2.5 s
+    // calibration probe when we've seen this mic before.
+    if (FMicDevice <> '') and (FMicFloorCache.IndexOfName(FMicDevice) >= 0) then
+    begin
+      // Cache stores floor with '.' decimal — force locale-independent parse.
+      FormatSettingsDot := DefaultFormatSettings;
+      FormatSettingsDot.DecimalSeparator := '.';
+      if not TryStrToFloat(FMicFloorCache.Values[FMicDevice], FloorDb,
+           FormatSettingsDot) then
+        FloorDb := -999;
+      FAudioRecorder.SetCachedFloorDb(FloorDb);
+    end
+    else
+      FAudioRecorder.SetCachedFloorDb(-999);
     if FAudioRecorder.Start(Path, btnMic.Down, btnSys.Down,
          FAudioQuality, FMicDevice, btnVAD.Down) then
     begin
@@ -1916,6 +1960,16 @@ begin
       btnRec.Caption := #$E2#$97#$8F + ' REC';
       btnRec.Invalidate;
       UpdateAudioStatus;
+      // If a calibration just happened, cache the floor against this
+      // mic so the next Start can skip the 1.5 s probe.
+      if btnVAD.Down and (FMicDevice <> '') and
+         (FAudioRecorder.LastFloorDb > -300) then
+      begin
+        FMicFloorCache.Values[FMicDevice] :=
+          StringReplace(FloatToStrF(FAudioRecorder.LastFloorDb, ffFixed, 5, 1),
+            ',', '.', []);
+        SaveConfig;
+      end;
     end
     else
     begin
@@ -2202,6 +2256,7 @@ begin
       S := Root.GetAttribute('taskDropRows');
       if TryStrToInt(S, V) and (V >= 5) and (V <= 60) then
         cbTask.DropDownCount := V;
+      LoadMicFloorCache(Root);
       case FAudioQuality of
         aqLow:  miAudioQLow.Checked := True;
         aqMid:  miAudioQMid.Checked := True;
@@ -2211,6 +2266,47 @@ begin
     end;
   finally
     Doc.Free;
+  end;
+end;
+
+procedure TMainForm.LoadMicFloorCache(Root: TObject);
+var
+  R: TDOMElement;
+  Node: TDOMNode;
+  El: TDOMElement;
+begin
+  if FMicFloorCache = nil then Exit;
+  R := Root as TDOMElement;
+  FMicFloorCache.Clear;
+  Node := R.FirstChild;
+  while Node <> nil do
+  begin
+    if (Node.NodeType = ELEMENT_NODE) and (Node.NodeName = 'micCal') then
+    begin
+      El := TDOMElement(Node);
+      if (El.GetAttribute('device') <> '') and (El.GetAttribute('floor') <> '') then
+        FMicFloorCache.Values[El.GetAttribute('device')] := El.GetAttribute('floor');
+    end;
+    Node := Node.NextSibling;
+  end;
+end;
+
+procedure TMainForm.SaveMicFloorCache(Doc, Root: TObject);
+var
+  D: TXMLDocument;
+  R: TDOMElement;
+  i: Integer;
+  El: TDOMElement;
+begin
+  if FMicFloorCache = nil then Exit;
+  D := Doc as TXMLDocument;
+  R := Root as TDOMElement;
+  for i := 0 to FMicFloorCache.Count - 1 do
+  begin
+    El := D.CreateElement('micCal');
+    El.SetAttribute('device', FMicFloorCache.Names[i]);
+    El.SetAttribute('floor', FMicFloorCache.ValueFromIndex[i]);
+    R.AppendChild(El);
   end;
 end;
 
@@ -2248,6 +2344,7 @@ begin
     if FAudioRecorder <> nil then
       Root.SetAttribute('vadSens', IntToStr(FAudioRecorder.FVadSensitivity));
     Root.SetAttribute('taskDropRows', IntToStr(cbTask.DropDownCount));
+    SaveMicFloorCache(Doc, Root);
     WriteXMLFile(Doc, FConfigFile);
   finally
     Doc.Free;

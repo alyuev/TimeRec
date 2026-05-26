@@ -21,6 +21,10 @@ type
     FStartTime: TDateTime;
     FAppDir: string;
     FLoop: TWasapiLoopback;
+    FMic: TWasapiLoopback;  // optional WASAPI mic capture (faster than dshow)
+    FMicPipeHandle: THandle;
+    FMicPipeName: string;
+    FMicPipeBroken: Boolean;
     FWriteLock: TCriticalSection;
     FPipeBroken: Boolean;
     FDrain: TStderrDrainThread;
@@ -32,11 +36,19 @@ type
     FVadSilent: Boolean;
     FNeedTrimPostPass: Boolean;
     FTrimThresholdDb: Double;
+    FCachedFloorDb: Double;
+    FLastFloorDb: Double;
   public
     FVadSensitivity: Integer;  // -10..+10 dB bias added to calibrated threshold
     function CurrentRmsDb: Double;
     function VadThresholdDb: Double;
     function VadIsSilent: Boolean;
+    // Caller may pre-seed the noise floor (from config) so Start skips
+    // the 1.5 s calibration probe. -999 means "no cache, calibrate".
+    procedure SetCachedFloorDb(Value: Double);
+    // After Start, the floor that was used (whether cached or freshly
+    // measured). Caller saves this to config for next time.
+    function LastFloorDb: Double;
   private
     function FindFFmpeg: string;
     procedure OnLoopData(Data: Pointer; Bytes: Integer);
@@ -45,6 +57,10 @@ type
     procedure ClosePipe;
     procedure AcceptLoopbackConnection;
     procedure TrimSilencePostPass;
+    function CreateMicPipe: Boolean;
+    procedure CloseMicPipe;
+    procedure AcceptMicConnection;
+    procedure OnMicData(Data: Pointer; Bytes: Integer);
   public
     function CalibrateMicNoiseFloorDb(const MicDevice: string): Double;
   private
@@ -95,6 +111,9 @@ begin
   FPipeHandle := INVALID_HANDLE_VALUE;
   FCurrentRmsDb := -100;
   FVadThresholdDb := -32;
+  FCachedFloorDb := -999;
+  FLastFloorDb := -999;
+  FMicPipeHandle := INVALID_HANDLE_VALUE;
 end;
 
 function TAudioRecorder.CurrentRmsDb: Double;
@@ -110,6 +129,16 @@ end;
 function TAudioRecorder.VadIsSilent: Boolean;
 begin
   Result := FVadSilent;
+end;
+
+procedure TAudioRecorder.SetCachedFloorDb(Value: Double);
+begin
+  FCachedFloorDb := Value;
+end;
+
+function TAudioRecorder.LastFloorDb: Double;
+begin
+  Result := FLastFloorDb;
 end;
 
 procedure TAudioRecorder.AppendLog(const S: string);
@@ -224,6 +253,17 @@ begin
     FWriteLock.Leave;
   end;
 end;
+
+procedure TAudioRecorder.OnMicData(Data: Pointer; Bytes: Integer);
+var
+  Written: DWORD;
+begin
+  if FMicPipeBroken or (FMicPipeHandle = INVALID_HANDLE_VALUE) or
+     (Data = nil) or (Bytes <= 0) then Exit;
+  if not WriteFile(FMicPipeHandle, Data^, Bytes, Written, nil) then
+    FMicPipeBroken := True;
+end;
+
 
 function TAudioRecorder.CalibrateMicNoiseFloorDb(const MicDevice: string): Double;
 // Probes the mic for 1.5 s, collects per-frame RMS_level via astats,
@@ -572,7 +612,16 @@ var
   Bitrate, InputCount, SysIdx, MicIdx: Integer;
   ActualMic, SysFmt, SilenceChain, GraphPre, SilenceDetect: string;
   NoiseFloorDb, ThresholdDb: Double;
+  TStart, TPrev, TNow: QWord;
+  procedure TimePoint(const What: string);
+  begin
+    TNow := GetTickCount64;
+    AppendLog(Format('  +%4d ms (Δ%4d) %s',
+      [TNow - TStart, TNow - TPrev, What]));
+    TPrev := TNow;
+  end;
 begin
+  TStart := GetTickCount64; TPrev := TStart;
   Result := False;
   if IsRecording then Exit;
   if not (Mic or Sys) then Exit;
@@ -598,9 +647,11 @@ begin
   // to the named pipe. Otherwise WriteFile blocks on the unconnected
   // pipe, the WASAPI thread stalls, and Windows drops the initial
   // packets, producing a ragged opening few seconds in the recording.
+  TimePoint('enter');
   if Sys then
   begin
     if not CreateLoopbackPipe then Exit;
+    TimePoint('sys pipe created');
     FLoop := TWasapiLoopback.Create;
     FLoop.OnData := nil;
     if not FLoop.Start then
@@ -609,6 +660,7 @@ begin
       ClosePipe;
       Exit;
     end;
+    TimePoint('sys WASAPI loopback started');
   end;
 
   FProcess := TProcess.Create(nil);
@@ -641,10 +693,47 @@ begin
   end;
   if Mic then
   begin
-    FProcess.Parameters.Add('-f');         FProcess.Parameters.Add('dshow');
-    FProcess.Parameters.Add('-rtbufsize'); FProcess.Parameters.Add('64M');
-    FProcess.Parameters.Add('-thread_queue_size'); FProcess.Parameters.Add('4096');
-    FProcess.Parameters.Add('-i');         FProcess.Parameters.Add('audio=' + ActualMic);
+    // Try WASAPI mic capture first — it initialises in ~50ms vs the
+    // 500–1500ms that dshow takes (especially bluetooth). Falls back
+    // to dshow if the device isn't found via the MMDevice enumerator.
+    FMic := nil;
+    if CreateMicPipe then
+    begin
+      TimePoint('mic pipe created');
+      FMic := TWasapiLoopback.Create;
+      FMic.OnData := nil;
+      if not FMic.StartCapture(MicDevice) then
+      begin
+        AppendLog('WASAPI mic not available (' + FMic.StartError +
+          '), falling back to dshow');
+        FreeAndNil(FMic);
+        CloseMicPipe;
+      end
+      else
+        TimePoint('mic WASAPI capture started');
+    end;
+    if FMic <> nil then
+    begin
+      AppendLog(Format('WASAPI mic capture: %d Hz %d ch %d-bit float=%s',
+        [FMic.SampleRate, FMic.Channels, FMic.BitsPerSample,
+         BoolToStr(FMic.IsFloat, True)]));
+      if FMic.IsFloat and (FMic.BitsPerSample = 32) then SysFmt := 'f32le'
+      else if FMic.BitsPerSample = 16 then SysFmt := 's16le'
+      else if FMic.BitsPerSample = 32 then SysFmt := 's32le'
+      else SysFmt := 'f32le';
+      FProcess.Parameters.Add('-f');  FProcess.Parameters.Add(SysFmt);
+      FProcess.Parameters.Add('-ar'); FProcess.Parameters.Add(IntToStr(FMic.SampleRate));
+      FProcess.Parameters.Add('-ac'); FProcess.Parameters.Add(IntToStr(FMic.Channels));
+      FProcess.Parameters.Add('-thread_queue_size'); FProcess.Parameters.Add('4096');
+      FProcess.Parameters.Add('-i'); FProcess.Parameters.Add(FMicPipeName);
+    end
+    else
+    begin
+      FProcess.Parameters.Add('-f');         FProcess.Parameters.Add('dshow');
+      FProcess.Parameters.Add('-rtbufsize'); FProcess.Parameters.Add('64M');
+      FProcess.Parameters.Add('-thread_queue_size'); FProcess.Parameters.Add('4096');
+      FProcess.Parameters.Add('-i');         FProcess.Parameters.Add('audio=' + ActualMic);
+    end;
     MicIdx := InputCount;
     Inc(InputCount);
   end;
@@ -670,7 +759,17 @@ begin
   else                    ThresholdDb := -32;
   if AutoPauseOnSilence and Mic then
   begin
-    NoiseFloorDb := CalibrateMicNoiseFloorDb(ActualMic);
+    if FCachedFloorDb > -300 then
+    begin
+      NoiseFloorDb := FCachedFloorDb;
+      AppendLog(Format('Calibration: using cached floor %.1f dB', [NoiseFloorDb]));
+    end
+    else
+    begin
+      NoiseFloorDb := CalibrateMicNoiseFloorDb(ActualMic);
+      TimePoint('mic calibration finished');
+    end;
+    FLastFloorDb := NoiseFloorDb;
     if NoiseFloorDb > -300 then
     begin
       if NoiseFloorDb < -70 then
@@ -752,7 +851,9 @@ begin
   AppendLog('cmdline: ' + FProcess.Executable + ' ' + FProcess.Parameters.CommaText);
 
   try
+    TimePoint('before ffmpeg Execute');
     FProcess.Execute;
+    TimePoint('ffmpeg Execute returned');
     FStartTime := Now;
     FDrain := TStderrDrainThread.Create(Self);
 
@@ -763,12 +864,21 @@ begin
     if (FPipeHandle <> INVALID_HANDLE_VALUE) and Sys then
     begin
       AcceptLoopbackConnection;
+      TimePoint('sys pipe accepted');
       if (FLoop <> nil) and (FPipeHandle <> INVALID_HANDLE_VALUE) then
       begin
         FLoop.ResetCadence;
         FLoop.OnData := @OnLoopData;
       end;
     end;
+    if (FMicPipeHandle <> INVALID_HANDLE_VALUE) and (FMic <> nil) then
+    begin
+      AcceptMicConnection;
+      TimePoint('mic pipe accepted');
+      if (FMic <> nil) and (FMicPipeHandle <> INVALID_HANDLE_VALUE) then
+        FMic.OnData := @OnMicData;
+    end;
+    TimePoint('Start done');
 
     Result := True;
   except
@@ -777,7 +887,9 @@ begin
       AppendLog('Start exception: ' + E.ClassName + ' ' + E.Message);
       FreeAndNil(FProcess);
       if FLoop <> nil then FreeAndNil(FLoop);
+      if FMic <> nil then FreeAndNil(FMic);
       ClosePipe;
+      CloseMicPipe;
       raise;
     end;
   end;
@@ -811,6 +923,60 @@ begin
   end;
 end;
 
+function TAudioRecorder.CreateMicPipe: Boolean;
+const
+  PIPE_ACCESS_OUTBOUND = $00000002;
+  PIPE_TYPE_BYTE = 0;
+  PIPE_WAIT = 0;
+  PIPE_REJECT_REMOTE_CLIENTS = 8;
+begin
+  FMicPipeName := '\\.\pipe\timerecmic_' + IntToStr(GetCurrentProcessId) + '_' +
+    IntToStr(GetTickCount64);
+  FMicPipeHandle := CreateNamedPipeA(PAnsiChar(AnsiString(FMicPipeName)),
+    PIPE_ACCESS_OUTBOUND,
+    PIPE_TYPE_BYTE or PIPE_WAIT or PIPE_REJECT_REMOTE_CLIENTS,
+    1, 2*1024*1024, 0, 0, nil);
+  Result := FMicPipeHandle <> INVALID_HANDLE_VALUE;
+end;
+
+procedure TAudioRecorder.CloseMicPipe;
+begin
+  if FMicPipeHandle <> INVALID_HANDLE_VALUE then
+  begin
+    try FlushFileBuffers(FMicPipeHandle); except end;
+    try CloseHandle(FMicPipeHandle); except end;
+    FMicPipeHandle := INVALID_HANDLE_VALUE;
+  end;
+end;
+
+procedure TAudioRecorder.AcceptMicConnection;
+var
+  Connector: TPipeConnectThread;
+  Waited: Integer;
+begin
+  if FMicPipeHandle = INVALID_HANDLE_VALUE then Exit;
+  Connector := TPipeConnectThread.Create(FMicPipeHandle);
+  try
+    Waited := 0;
+    while Waited < 3000 do
+    begin
+      if Connector.FConnected then Break;
+      if Connector.Finished then Break;
+      Sleep(20); Inc(Waited, 20);
+    end;
+    if not Connector.FConnected then
+    begin
+      AppendLog('Mic pipe connect timeout');
+      CloseMicPipe;
+      try Connector.WaitFor; except end;
+    end
+    else
+      AppendLog('Mic pipe connected after ' + IntToStr(Waited) + ' ms');
+  finally
+    Connector.Free;
+  end;
+end;
+
 procedure TAudioRecorder.Stop;
 const
   QSeq: array[0..1] of AnsiChar = ('q', #10);
@@ -823,10 +989,16 @@ begin
     try FLoop.Stop; except end;
     FreeAndNil(FLoop);
   end;
-  // Close the loopback pipe so ffmpeg sees EOF on that input.
+  if FMic <> nil then
+  begin
+    try FMic.Stop; except end;
+    FreeAndNil(FMic);
+  end;
+  // Close the loopback / mic pipes so ffmpeg sees EOF on those inputs.
   FWriteLock.Enter;
   try
     ClosePipe;
+    CloseMicPipe;
   finally
     FWriteLock.Leave;
   end;
