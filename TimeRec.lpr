@@ -9,6 +9,7 @@ uses
   Interfaces, Forms, umain;
 
 {$R TimeRec.res}
+{$R ffmpeg_res.rc}
 
 begin
   RequireDerivedFormResource := True;

@@ -498,15 +498,82 @@ begin
   end;
 end;
 
+function CanWriteTo(const Dir: string): Boolean;
+var
+  Probe: string;
+  H: THandle;
+begin
+  Probe := IncludeTrailingPathDelimiter(Dir) + '.timerec_probe_' +
+    IntToStr(GetTickCount64);
+  H := FileCreate(Probe);
+  Result := H <> THandle(-1);
+  if Result then
+  begin
+    FileClose(H);
+    SysUtils.DeleteFile(Probe);
+  end;
+end;
+
+function ExtractEmbeddedFFmpeg: string;
+var
+  Dir: string;
+  RS: TResourceStream;
+  FS: TFileStream;
+  ExistingSize: Int64;
+begin
+  Result := '';
+  // 1. Prefer the EXE's own directory — keeps everything together.
+  Dir := ExtractFilePath(ParamStr(0));
+  if (Dir = '') or (not CanWriteTo(Dir)) then
+  begin
+    // 2. Fall back to %LOCALAPPDATA%\TimeRec\ (covers Program Files,
+    //    UNC shares with execute-only ACLs, etc.).
+    Dir := SysUtils.GetEnvironmentVariable('LOCALAPPDATA');
+    if Dir = '' then Dir := SysUtils.GetEnvironmentVariable('APPDATA');
+    if Dir = '' then Exit;
+    Dir := IncludeTrailingPathDelimiter(Dir) + 'TimeRec';
+    if not ForceDirectories(Dir) then Exit;
+  end;
+  Result := IncludeTrailingPathDelimiter(Dir) + 'ffmpeg.exe';
+  if FindResource(HInstance, 'FFMPEG_EXE', RT_RCDATA) = 0 then
+  begin
+    Result := '';
+    Exit;
+  end;
+  try
+    RS := TResourceStream.Create(HInstance, 'FFMPEG_EXE', RT_RCDATA);
+    try
+      ExistingSize := -1;
+      if FileExists(Result) then
+      try
+        FS := TFileStream.Create(Result, fmOpenRead or fmShareDenyNone);
+        try ExistingSize := FS.Size finally FS.Free end;
+      except end;
+      if ExistingSize <> RS.Size then
+      try
+        RS.SaveToFile(Result);
+      except
+        Result := '';
+      end;
+    finally
+      RS.Free;
+    end;
+  except
+    Result := '';
+  end;
+end;
+
 function TAudioRecorder.FindFFmpeg: string;
 var
   P: string;
 begin
-  // 1. Same directory as the app
+  // 1. Side-by-side ffmpeg.exe wins (dev / portable installs).
   P := IncludeTrailingPathDelimiter(FAppDir) + 'ffmpeg.exe';
   if FileExists(P) then Exit(P);
-  // 2. Rely on PATH lookup (FPC's TProcess can resolve unqualified
-  //    names on Windows when no path separator is present).
+  // 2. Embedded resource extracted to %LOCALAPPDATA%\TimeRec\ffmpeg.exe.
+  P := ExtractEmbeddedFFmpeg;
+  if (P <> '') and FileExists(P) then Exit(P);
+  // 3. Last resort: bare name, let the OS resolve via PATH.
   Result := 'ffmpeg.exe';
 end;
 
@@ -596,13 +663,9 @@ function TAudioRecorder.FFmpegAvailable: Boolean;
 var
   Path: string;
 begin
-  // Don't spawn `ffmpeg -version` — with pipes attached and no drainer
-  // it deadlocks (ffmpeg blocks on its stdout, WaitOnExit blocks here).
-  // Just check the local copy; if the user has it in PATH only, our
-  // FindFFmpeg returns the bare name and the actual Start call will
-  // surface any "not found" error.
   Path := IncludeTrailingPathDelimiter(FAppDir) + 'ffmpeg.exe';
-  Result := FileExists(Path);
+  if FileExists(Path) then Exit(True);
+  Result := FindResource(HInstance, 'FFMPEG_EXE', RT_RCDATA) <> 0;
 end;
 
 function TAudioRecorder.Start(const OutFile: string; Mic, Sys: Boolean;

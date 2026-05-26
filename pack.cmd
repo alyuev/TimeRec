@@ -14,5 +14,8 @@ if not defined UPXBIN (
   exit /b 0
 )
 echo [pack.cmd] Packing with: !UPXBIN!
-"!UPXBIN!" --best --lzma "%~1"
+rem --no-lzma: older Windows (Server 2008 etc.) have trouble with UPX's
+rem LZMA unpacker. --compress-resources=0: leave the embedded ffmpeg
+rem RCDATA uncompressed so FindResource works on every Windows.
+"!UPXBIN!" --best --no-lzma --compress-resources=0 "%~1"
 exit /b 0
