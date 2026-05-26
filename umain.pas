@@ -255,6 +255,7 @@ begin
   FOpacity := 100;
   FOpacitySupported := CheckOpacitySupported;
   FAudioDir := '';
+  cbTask.DropDownCount := 20;  // default — overridden by config later
   FAudioQuality := aqMid;
   FAudioRecorder := TAudioRecorder.Create(AppDir);
   FAudioFilesForSegment := TStringList.Create;
@@ -1127,7 +1128,8 @@ begin
   // Reset highlight tracking for the new dropdown session
   GHighlightedIdx := -1;
   FHighlightedIdx := -1;
-  // Lazy-subclass the inner Edit on first dropdown — it exists by now.
+  // Lazy-subclass the inner Edit and the dropdown listbox on first
+  // dropdown — both exist by now.
   if (GComboEdit = 0) and cbTask.HandleAllocated then
     SubclassComboEdit(cbTask.Handle);
   if FProgrammaticDrop then
@@ -1137,6 +1139,7 @@ begin
   end;
   RestoreFullList;
 end;
+
 
 type
   TComboBoxInfo = packed record
@@ -1259,27 +1262,54 @@ begin
 end;
 
 procedure TMainForm.ApplyComboFilter;
+// Compute the filtered list and apply it as a diff against the
+// combobox's current Items, so only the rows that actually change
+// get invalidated. The previous Clear+AddStrings approach made the
+// open dropdown flash on every keystroke.
 var
   Filter, LFilter, S: string;
-  i, OldStart, OldLen: Integer;
+  i, j, OldStart, OldLen: Integer;
   Tokens: TStringArray;
+  NewList: TStringList;
 begin
   FFiltering := True;
+  NewList := TStringList.Create;
   try
     Filter := cbTask.Text;
     LFilter := UTF8LowerCase(Filter);
     SplitTokens(LFilter, Tokens);
     OldStart := cbTask.SelStart;
     OldLen := cbTask.SelLength;
+    for i := 0 to FAllTasks.Count - 1 do
+    begin
+      S := FAllTasks[i];
+      if TokensMatch(UTF8LowerCase(S), Tokens) then
+        NewList.Add(S);
+    end;
     cbTask.Items.BeginUpdate;
     try
-      cbTask.Items.Clear;
-      for i := 0 to FAllTasks.Count - 1 do
+      i := 0;
+      while i < NewList.Count do
       begin
-        S := FAllTasks[i];
-        if TokensMatch(UTF8LowerCase(S), Tokens) then
-          cbTask.Items.Add(S);
+        if i >= cbTask.Items.Count then
+          cbTask.Items.Add(NewList[i])
+        else if cbTask.Items[i] = NewList[i] then
+          // keep
+        else
+        begin
+          // Look ahead: does the current item appear later in the new
+          // list? If so insert before it. Otherwise drop it.
+          j := NewList.IndexOf(cbTask.Items[i]);
+          if (j > i) then
+            cbTask.Items.Insert(i, NewList[i])
+          else
+            cbTask.Items.Delete(i);
+          Continue;
+        end;
+        Inc(i);
       end;
+      while cbTask.Items.Count > NewList.Count do
+        cbTask.Items.Delete(cbTask.Items.Count - 1);
     finally
       cbTask.Items.EndUpdate;
     end;
@@ -1292,7 +1322,13 @@ begin
       FProgrammaticDrop := True;
       cbTask.DroppedDown := True;
     end;
+    // Windows' "hide pointer while typing" feature decrements the
+    // global cursor counter on each keystroke. Mutating the dropdown's
+    // Items list while typing seems to keep the counter negative so
+    // moving the mouse doesn't bring the cursor back. Force it visible.
+    while ShowCursor(True) < 0 do ;
   finally
+    NewList.Free;
     FFiltering := False;
   end;
 end;
@@ -1572,6 +1608,7 @@ begin
     TasksEditForm := TTasksEditForm.Create(Application);
   TasksEditForm.ShowFor(FTasksFile);
 end;
+
 
 function TMainForm.ResolvedAudioDir: string;
 begin
@@ -2162,6 +2199,9 @@ begin
           miVadMid.Checked := True;
         end;
       end;
+      S := Root.GetAttribute('taskDropRows');
+      if TryStrToInt(S, V) and (V >= 5) and (V <= 60) then
+        cbTask.DropDownCount := V;
       case FAudioQuality of
         aqLow:  miAudioQLow.Checked := True;
         aqMid:  miAudioQMid.Checked := True;
@@ -2207,6 +2247,7 @@ begin
                    else Root.SetAttribute('vad', '0');
     if FAudioRecorder <> nil then
       Root.SetAttribute('vadSens', IntToStr(FAudioRecorder.FVadSensitivity));
+    Root.SetAttribute('taskDropRows', IntToStr(cbTask.DropDownCount));
     WriteXMLFile(Doc, FConfigFile);
   finally
     Doc.Free;
