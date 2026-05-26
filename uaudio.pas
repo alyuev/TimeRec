@@ -182,6 +182,7 @@ var
   Fmt: TFormatSettings;
   HasErr: Boolean;
 begin
+  try
   Frag := '';
   Fmt := DefaultFormatSettings;
   Fmt.DecimalSeparator := '.';
@@ -235,6 +236,10 @@ begin
     end
     else
       Sleep(30);
+  end;
+  except
+    on E: Exception do
+      FOwner.AppendLog('Drain thread exception: ' + E.ClassName + ' ' + E.Message);
   end;
 end;
 
@@ -504,12 +509,20 @@ begin
 end;
 
 procedure TAudioRecorder.ClosePipe;
+var
+  H: THandle;
 begin
   if FPipeHandle <> INVALID_HANDLE_VALUE then
   begin
-    try FlushFileBuffers(FPipeHandle); except end;
-    try CloseHandle(FPipeHandle); except end;
-    FPipeHandle := INVALID_HANDLE_VALUE;
+    AppendLog('ClosePipe: disconnect+close');
+    H := FPipeHandle;
+    FPipeHandle := INVALID_HANDLE_VALUE;  // mark closed first so other threads bail
+    // Skip FlushFileBuffers — on a named pipe with a misbehaving reader
+    // it can block or AV. DisconnectNamedPipe + CloseHandle is enough:
+    // ffmpeg sees EOF and finalises its output.
+    try DisconnectNamedPipe(H); except end;
+    try CloseHandle(H); except end;
+    AppendLog('ClosePipe done');
   end;
 end;
 
@@ -965,7 +978,13 @@ begin
       AcceptMicConnection;
       TimePoint('mic pipe accepted');
       if (FMic <> nil) and (FMicPipeHandle <> INVALID_HANDLE_VALUE) then
+      begin
+        // Drain whatever the WASAPI buffer accumulated while OnData
+        // was nil — including any leftovers from a previous session
+        // whose Stop crashed and never released the audio client.
+        FMic.ResetCadence;
         FMic.OnData := @OnMicData;
+      end;
     end;
     TimePoint('Start done');
 
@@ -1029,12 +1048,17 @@ begin
 end;
 
 procedure TAudioRecorder.CloseMicPipe;
+var
+  H: THandle;
 begin
   if FMicPipeHandle <> INVALID_HANDLE_VALUE then
   begin
-    try FlushFileBuffers(FMicPipeHandle); except end;
-    try CloseHandle(FMicPipeHandle); except end;
+    AppendLog('CloseMicPipe: disconnect+close');
+    H := FMicPipeHandle;
     FMicPipeHandle := INVALID_HANDLE_VALUE;
+    try DisconnectNamedPipe(H); except end;
+    try CloseHandle(H); except end;
+    AppendLog('CloseMicPipe done');
   end;
 end;
 
@@ -1073,23 +1097,25 @@ var
   i: Integer;
 begin
   AppendLog('--- STOP requested ---');
-  // Each cleanup step is independently guarded — if any one of them
-  // raises (WASAPI thread, COM teardown, pipe handle race) we still
-  // continue with the rest instead of taking the whole app down.
+  AppendLog('Stop A: about to stop FLoop');
   try
     if FLoop <> nil then
     begin
-      try FLoop.Stop; except end;
+      try FLoop.Stop; except on E: Exception do AppendLog('  FLoop.Stop err: ' + E.Message); end;
+      AppendLog('Stop A1: FreeAndNil FLoop');
       FreeAndNil(FLoop);
     end;
-  except on E: Exception do AppendLog('Stop/FLoop AV: ' + E.Message); end;
+  except on E: Exception do AppendLog('Stop A AV: ' + E.Message); end;
+  AppendLog('Stop B: about to stop FMic');
   try
     if FMic <> nil then
     begin
-      try FMic.Stop; except end;
+      try FMic.Stop; except on E: Exception do AppendLog('  FMic.Stop err: ' + E.Message); end;
+      AppendLog('Stop B1: FreeAndNil FMic');
       FreeAndNil(FMic);
     end;
-  except on E: Exception do AppendLog('Stop/FMic AV: ' + E.Message); end;
+  except on E: Exception do AppendLog('Stop B AV: ' + E.Message); end;
+  AppendLog('Stop C: about to close pipes');
   try
     FWriteLock.Enter;
     try
@@ -1098,15 +1124,19 @@ begin
     finally
       FWriteLock.Leave;
     end;
-  except on E: Exception do AppendLog('Stop/pipes AV: ' + E.Message); end;
-  if FProcess = nil then Exit;
+  except on E: Exception do AppendLog('Stop C AV: ' + E.Message); end;
+  AppendLog('Stop D: pipes closed');
+  AppendLog('Stop E: about to interact with FProcess');
+  if FProcess = nil then begin AppendLog('Stop E: FProcess nil'); Exit; end;
   try
     if FProcess.Running then
     begin
+      AppendLog('Stop E1: sending q to stdin');
       try
         FProcess.Input.Write(QSeq[0], 2);
         FProcess.CloseInput;
-      except end;
+      except on E: Exception do AppendLog('  q-send err: ' + E.Message); end;
+      AppendLog('Stop E2: waiting for ffmpeg exit');
       // 3 sec graceful: bluetooth dshow and amix+silenceremove can
       // need that long to drain. Then force terminate.
       for i := 1 to 30 do
@@ -1126,12 +1156,15 @@ begin
       end;
     end;
   finally
+    AppendLog('Stop F: drain shutdown');
     if FDrain <> nil then
     begin
-      FDrain.Terminate;
-      try FDrain.WaitFor; except end;
-      FreeAndNil(FDrain);
+      try FDrain.Terminate; except on E: Exception do AppendLog('  drain.Terminate err: ' + E.Message); end;
+      try FDrain.WaitFor; except on E: Exception do AppendLog('  drain.WaitFor err: ' + E.Message); end;
+      AppendLog('Stop F1: free drain');
+      try FreeAndNil(FDrain); except on E: Exception do AppendLog('  free drain err: ' + E.Message); end;
     end;
+    AppendLog('Stop G: free FProcess');
     try FreeAndNil(FProcess); except FProcess := nil; end;
     AppendLog('--- STOP complete ---');
   end;

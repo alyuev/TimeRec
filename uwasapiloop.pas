@@ -367,6 +367,7 @@ begin
   ComInited := False;
   Fmt := nil;
   try
+  try
     hr := CoInitializeEx(nil, COINIT_MULTITHREADED);
     if (hr = S_OK) or (hr = S_FALSE) then ComInited := True;
 
@@ -506,6 +507,13 @@ begin
     Enum := nil;
     if ComInited then CoUninitialize;
   end;
+  except
+    on E: Exception do
+      FOwner.FStartError := 'WASAPI thread exception: ' + E.ClassName + ' ' + E.Message;
+  end;
+  // Make sure the format-ready event is signalled so Start doesn't
+  // hang in WaitForSingleObject waiting for an aborted thread.
+  if FOwner.FFormatReady <> 0 then SetEvent(FOwner.FFormatReady);
 end;
 
 end.
