@@ -263,6 +263,15 @@ object MainForm: TMainForm
         Caption = #1057#1073#1088#1086#1089#1080#1090#1100' '#1082#1072#1083#1080#1073#1088#1086#1074#1082#1091' '#1084#1080#1082#1088#1086#1092#1086#1085#1086#1074
         OnClick = miClearMicCalClick
       end
+      object miVerboseLog: TMenuItem
+        Caption = #1055#1086#1083#1085#1086#1077' '#1083#1086#1075#1080#1088#1086#1074#1072#1085#1080#1077' (debug)'
+        AutoCheck = True
+        OnClick = miVerboseLogClick
+      end
+      object miOpenLog: TMenuItem
+        Caption = #1054#1090#1082#1088#1099#1090#1100' '#1083#1086#1075' '#1079#1072#1087#1080#1089#1080
+        OnClick = miOpenLogClick
+      end
     end
     object miHideFromTaskBar: TMenuItem
       Caption = #1057#1082#1088#1099#1090#1100' '#1080#1079' '#1087#1072#1085#1077#1083#1080' '#1079#1072#1076#1072#1095

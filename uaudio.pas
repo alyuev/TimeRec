@@ -40,6 +40,8 @@ type
     FLastFloorDb: Double;
   public
     FVadSensitivity: Integer;  // -10..+10 dB bias added to calibrated threshold
+    FVerbose: Boolean;         // verbose logging for debug
+    function LogPath: string;
     function CurrentRmsDb: Double;
     function VadThresholdDb: Double;
     function VadIsSilent: Boolean;
@@ -129,6 +131,11 @@ end;
 function TAudioRecorder.VadIsSilent: Boolean;
 begin
   Result := FVadSilent;
+end;
+
+function TAudioRecorder.LogPath: string;
+begin
+  Result := FLogPath;
 end;
 
 procedure TAudioRecorder.SetCachedFloorDb(Value: Double);
@@ -260,8 +267,16 @@ var
 begin
   if FMicPipeBroken or (FMicPipeHandle = INVALID_HANDLE_VALUE) or
      (Data = nil) or (Bytes <= 0) then Exit;
-  if not WriteFile(FMicPipeHandle, Data^, Bytes, Written, nil) then
-    FMicPipeBroken := True;
+  // Synchronise with Stop's ClosePipe / CloseMicPipe so the handle
+  // can't be invalidated mid-WriteFile from another thread.
+  FWriteLock.Enter;
+  try
+    if FMicPipeHandle = INVALID_HANDLE_VALUE then Exit;
+    if not WriteFile(FMicPipeHandle, Data^, Bytes, Written, nil) then
+      FMicPipeBroken := True;
+  finally
+    FWriteLock.Leave;
+  end;
 end;
 
 
@@ -732,7 +747,12 @@ begin
   FProcess.Parameters.Add('-hide_banner');
   FProcess.Parameters.Add('-nostats');
   FProcess.Parameters.Add('-loglevel');
-  FProcess.Parameters.Add('error');
+  // 'info' is enough for debug — shows config / init / errors. 'verbose'
+  // adds per-frame messages and floods stderr (hundreds of MB over
+  // long recordings) which our drain thread can't keep up with, the
+  // pipe back-pressures ffmpeg and weird things happen at Stop.
+  if FVerbose then FProcess.Parameters.Add('info')
+  else             FProcess.Parameters.Add('error');
 
   InputCount := 0;
   SysIdx := -1;
@@ -1053,30 +1073,36 @@ var
   i: Integer;
 begin
   AppendLog('--- STOP requested ---');
-  if FLoop <> nil then
-  begin
-    try FLoop.Stop; except end;
-    FreeAndNil(FLoop);
-  end;
-  if FMic <> nil then
-  begin
-    try FMic.Stop; except end;
-    FreeAndNil(FMic);
-  end;
-  // Close the loopback / mic pipes so ffmpeg sees EOF on those inputs.
-  FWriteLock.Enter;
+  // Each cleanup step is independently guarded — if any one of them
+  // raises (WASAPI thread, COM teardown, pipe handle race) we still
+  // continue with the rest instead of taking the whole app down.
   try
-    ClosePipe;
-    CloseMicPipe;
-  finally
-    FWriteLock.Leave;
-  end;
+    if FLoop <> nil then
+    begin
+      try FLoop.Stop; except end;
+      FreeAndNil(FLoop);
+    end;
+  except on E: Exception do AppendLog('Stop/FLoop AV: ' + E.Message); end;
+  try
+    if FMic <> nil then
+    begin
+      try FMic.Stop; except end;
+      FreeAndNil(FMic);
+    end;
+  except on E: Exception do AppendLog('Stop/FMic AV: ' + E.Message); end;
+  try
+    FWriteLock.Enter;
+    try
+      ClosePipe;
+      CloseMicPipe;
+    finally
+      FWriteLock.Leave;
+    end;
+  except on E: Exception do AppendLog('Stop/pipes AV: ' + E.Message); end;
   if FProcess = nil then Exit;
   try
     if FProcess.Running then
     begin
-      // Send 'q' to ffmpeg's stdin for a clean shutdown — it flushes
-      // muxer trailers and exits with code 0.
       try
         FProcess.Input.Write(QSeq[0], 2);
         FProcess.CloseInput;

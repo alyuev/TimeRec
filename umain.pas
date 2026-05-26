@@ -6,8 +6,8 @@ interface
 
 uses
   Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, ComCtrls, Menus,
-  Buttons, Graphics, LCLType, LMessages, Dialogs, Windows, Types, uaudio,
-  uaudiolist;
+  Buttons, Graphics, LCLType, LMessages, Dialogs, Windows, Types, ShellApi,
+  uaudio, uaudiolist;
 
 type
   TMainForm = class(TForm)
@@ -34,6 +34,8 @@ type
     miVadMid: TMenuItem;
     miVadLow: TMenuItem;
     miClearMicCal: TMenuItem;
+    miVerboseLog: TMenuItem;
+    miOpenLog: TMenuItem;
     pbSlider: TPaintBox;
     miBuildInfo: TMenuItem;
     miSepBuild: TMenuItem;
@@ -88,6 +90,8 @@ type
     procedure btnVADClick(Sender: TObject);
     procedure miVadSensClick(Sender: TObject);
     procedure miClearMicCalClick(Sender: TObject);
+    procedure miVerboseLogClick(Sender: TObject);
+    procedure miOpenLogClick(Sender: TObject);
     procedure btnAudioListClick(Sender: TObject);
     procedure AudioListHidden(Sender: TObject);
     procedure btnMicDropClick(Sender: TObject);
@@ -1778,6 +1782,25 @@ begin
       FAudioListForm.Width, FAudioListForm.Height);
 end;
 
+procedure TMainForm.miVerboseLogClick(Sender: TObject);
+begin
+  if FAudioRecorder <> nil then
+    FAudioRecorder.FVerbose := miVerboseLog.Checked;
+  SaveConfig;
+end;
+
+procedure TMainForm.miOpenLogClick(Sender: TObject);
+var
+  P: string;
+begin
+  if FAudioRecorder = nil then Exit;
+  P := FAudioRecorder.LogPath;
+  if FileExists(P) then
+    ShellExecuteW(0, nil, PWideChar(UnicodeString(P)), nil, nil, 1)
+  else
+    ShowMessage('Лог-файл ещё не создан (' + P + ')');
+end;
+
 procedure TMainForm.miClearMicCalClick(Sender: TObject);
 var
   N: Integer;
@@ -2027,7 +2050,11 @@ begin
   if FAudioRecorder.IsRecording then
   begin
     Sec := FAudioRecorder.ElapsedSec;
-    S := Format('запись %.2d:%.2d', [Sec div 60, Sec mod 60]);
+    if Sec >= 3600 then
+      S := Format('запись %d:%.2d:%.2d',
+        [Sec div 3600, (Sec div 60) mod 60, Sec mod 60])
+    else
+      S := Format('запись %.2d:%.2d', [Sec div 60, Sec mod 60]);
     if FAudioFilesForSegment.Count > 1 then
       S := S + Format(' (#%d)', [FAudioFilesForSegment.Count]);
   end
@@ -2256,6 +2283,11 @@ begin
       S := Root.GetAttribute('taskDropRows');
       if TryStrToInt(S, V) and (V >= 5) and (V <= 60) then
         cbTask.DropDownCount := V;
+      if Root.GetAttribute('verboseLog') = '1' then
+      begin
+        miVerboseLog.Checked := True;
+        if FAudioRecorder <> nil then FAudioRecorder.FVerbose := True;
+      end;
       LoadMicFloorCache(Root);
       case FAudioQuality of
         aqLow:  miAudioQLow.Checked := True;
@@ -2344,6 +2376,8 @@ begin
     if FAudioRecorder <> nil then
       Root.SetAttribute('vadSens', IntToStr(FAudioRecorder.FVadSensitivity));
     Root.SetAttribute('taskDropRows', IntToStr(cbTask.DropDownCount));
+    if miVerboseLog.Checked then Root.SetAttribute('verboseLog', '1')
+                            else Root.SetAttribute('verboseLog', '0');
     SaveMicFloorCache(Doc, Root);
     WriteXMLFile(Doc, FConfigFile);
   finally
