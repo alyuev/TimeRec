@@ -137,6 +137,8 @@ type
     FAudioPausedTotalMs: QWord;  // accumulated paused-time for this recording
     FRecStartTickMs: QWord;      // precise wall-clock at recording start
     FAudioListForm: TAudioListForm;
+    FOrigMouseVanish: BOOL;
+    FMouseVanishOverridden: Boolean;
     FMicDevice: string;
     FMicDropMenu: TPopupMenu;
     procedure RefreshMicDropdownVisibility;
@@ -265,6 +267,20 @@ begin
   FOpacitySupported := CheckOpacitySupported;
   FAudioDir := '';
   cbTask.DropDownCount := 20;  // default — overridden by config later
+  // Disable Windows' "Hide pointer while typing" feature for our
+  // session — it's user-friendly for documents but here it hides
+  // the cursor for the whole app while the user types into the
+  // task combobox and never restores it until physical mouse
+  // movement, which feels broken. Restored on FormClose.
+  if SystemParametersInfo(SPI_GETMOUSEVANISH, 0, @FOrigMouseVanish, 0) then
+  begin
+    if FOrigMouseVanish then
+    begin
+      FMouseVanishOverridden := True;
+      SystemParametersInfo(SPI_SETMOUSEVANISH, 0,
+        Pointer(PtrInt(0))  {= BOOL False}, 0);
+    end;
+  end;
   FAudioQuality := aqMid;
   FAudioRecorder := TAudioRecorder.Create(AppDir);
   FAudioFilesForSegment := TStringList.Create;
@@ -328,7 +344,17 @@ begin
 end;
 
 procedure TMainForm.FormClose(Sender: TObject; var CloseAction: TCloseAction);
+var
+  V: BOOL;
 begin
+  // Restore "Hide pointer while typing" to whatever the user had
+  // set, so we don't permanently alter their system preferences.
+  if FMouseVanishOverridden then
+  begin
+    V := FOrigMouseVanish;
+    SystemParametersInfo(SPI_SETMOUSEVANISH, 0, @V, 0);
+    FMouseVanishOverridden := False;
+  end;
   if FAudioRecorder <> nil then
   begin
     if FAudioRecorder.IsRecording then FAudioRecorder.Stop;
@@ -392,7 +418,6 @@ begin
   lblAudio.SetBounds     (Round(176 * S), Round(60 * S), Round(160 * S), Round(14 * S));
   lblAudio.Font.Height := NewFont;
   Application.QueueAsyncCall(@DeselectCombo, 0);
-  AnchorAudioListForm;
 end;
 
 procedure TMainForm.Timer1Timer(Sender: TObject);
@@ -402,7 +427,6 @@ begin
   pbSlider.Invalidate;
   RefreshTodayTotal;
   UpdateAudioStatus;
-  AnchorAudioListForm;
   if (Now - FLastAlive) * 86400 > 10 then
     UpdateCurrentMarker;
 end;
@@ -1334,11 +1358,9 @@ begin
       FProgrammaticDrop := True;
       cbTask.DroppedDown := True;
     end;
-    // Windows' "hide pointer while typing" feature decrements the
-    // global cursor counter on each keystroke. Mutating the dropdown's
-    // Items list while typing seems to keep the counter negative so
-    // moving the mouse doesn't bring the cursor back. Force it visible.
-    while ShowCursor(True) < 0 do ;
+    // "Hide pointer while typing" is disabled session-wide in
+    // FormCreate (and restored on FormClose), so nothing extra
+    // needs to happen here.
   finally
     NewList.Free;
     FFiltering := False;
@@ -1826,7 +1848,10 @@ procedure TMainForm.AnchorAudioListForm;
 var
   NewLeft, NewTop, ScrW: Integer;
 begin
-  if (FAudioListForm = nil) or (not FAudioListForm.Visible) then Exit;
+  // Note: we deliberately don't check Visible — callers need to
+  // position the form BEFORE Show, otherwise it flashes at the old
+  // position then jumps under the main form.
+  if FAudioListForm = nil then Exit;
   // Default: pin the list's left to main's left.
   NewLeft := Left;
   NewTop  := Top + Height;
