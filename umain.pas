@@ -36,6 +36,14 @@ type
     miClearMicCal: TMenuItem;
     miVerboseLog: TMenuItem;
     miOpenLog: TMenuItem;
+    miAudioChannels: TMenuItem;
+    miChMono: TMenuItem;
+    miChStereo: TMenuItem;
+    miAudioRate: TMenuItem;
+    miRate16: TMenuItem;
+    miRate22: TMenuItem;
+    miRate44: TMenuItem;
+    miRate48: TMenuItem;
     pbSlider: TPaintBox;
     miBuildInfo: TMenuItem;
     miSepBuild: TMenuItem;
@@ -92,6 +100,8 @@ type
     procedure miClearMicCalClick(Sender: TObject);
     procedure miVerboseLogClick(Sender: TObject);
     procedure miOpenLogClick(Sender: TObject);
+    procedure miAudioChClick(Sender: TObject);
+    procedure miAudioRateClick(Sender: TObject);
     procedure btnAudioListClick(Sender: TObject);
     procedure AudioListHidden(Sender: TObject);
     procedure btnMicDropClick(Sender: TObject);
@@ -127,6 +137,8 @@ type
     FOpacitySupported: Boolean;
     FAudioDir: string;
     FAudioQuality: TAudioQuality;
+    FAudioChannels: Integer;    // 1=mono, 2=stereo
+    FAudioSampleRate: Integer;  // Hz
     FAudioRecorder: TAudioRecorder;
     FAudioFilesForSegment: TStringList;
     FMicFloorCache: TStringList;  // "MicDevice=FloorDb" pairs
@@ -267,6 +279,8 @@ begin
   FOpacity := 100;
   FOpacitySupported := CheckOpacitySupported;
   FAudioDir := '';
+  FAudioChannels := 1;
+  FAudioSampleRate := 16000;
   cbTask.DropDownCount := 20;  // default — overridden by config later
   // Disable Windows' "Hide pointer while typing" feature for our
   // session — it's user-friendly for documents but here it hides
@@ -1933,6 +1947,24 @@ begin
   SaveConfig;
 end;
 
+procedure TMainForm.miAudioChClick(Sender: TObject);
+var Mi: TMenuItem;
+begin
+  Mi := Sender as TMenuItem;
+  Mi.Checked := True;
+  FAudioChannels := Mi.Tag;
+  SaveConfig;
+end;
+
+procedure TMainForm.miAudioRateClick(Sender: TObject);
+var Mi: TMenuItem;
+begin
+  Mi := Sender as TMenuItem;
+  Mi.Checked := True;
+  FAudioSampleRate := Mi.Tag;
+  SaveConfig;
+end;
+
 procedure TMainForm.miOpenLogClick(Sender: TObject);
 var
   P: string;
@@ -2113,7 +2145,8 @@ begin
     else
       FAudioRecorder.SetCachedFloorDb(-999);
     if FAudioRecorder.Start(Path, btnMic.Down, btnSys.Down,
-         FAudioQuality, FMicDevice, btnVAD.Down) then
+         FAudioQuality, FMicDevice, btnVAD.Down,
+         FAudioChannels, FAudioSampleRate) then
     begin
       DbgLog('  Start returned True; IsRecording=' + BoolToStr(FAudioRecorder.IsRecording, True));
       FAudioFilesForSegment.Add(Path);
@@ -2411,6 +2444,22 @@ begin
       FLazyCureDir := Root.GetAttribute('lazyCureDir');
       FAudioDir := Root.GetAttribute('audioDir');
       FMicDevice := Root.GetAttribute('micDevice');
+      S := Root.GetAttribute('audioChannels');
+      if TryStrToInt(S, V) and ((V = 1) or (V = 2)) then
+      begin
+        FAudioChannels := V;
+        if V = 2 then miChStereo.Checked := True else miChMono.Checked := True;
+      end;
+      S := Root.GetAttribute('audioRate');
+      if TryStrToInt(S, V) then
+      begin
+        case V of
+          16000: begin FAudioSampleRate := V; miRate16.Checked := True; end;
+          22050: begin FAudioSampleRate := V; miRate22.Checked := True; end;
+          44100: begin FAudioSampleRate := V; miRate44.Checked := True; end;
+          48000: begin FAudioSampleRate := V; miRate48.Checked := True; end;
+        end;
+      end;
       S := Root.GetAttribute('audioQuality');
       if TryStrToInt(S, V) and (V >= 0) and (V <= 2) then
         FAudioQuality := TAudioQuality(V);
@@ -2519,6 +2568,8 @@ begin
     if FMicDevice <> '' then
       Root.SetAttribute('micDevice', FMicDevice);
     Root.SetAttribute('audioQuality', IntToStr(Ord(FAudioQuality)));
+    Root.SetAttribute('audioChannels', IntToStr(FAudioChannels));
+    Root.SetAttribute('audioRate', IntToStr(FAudioSampleRate));
     if btnMic.Down then Root.SetAttribute('recMic', '1')
                    else Root.SetAttribute('recMic', '0');
     if btnSys.Down then Root.SetAttribute('recSys', '1')

@@ -36,6 +36,8 @@ type
     FVadSilent: Boolean;
     FNeedTrimPostPass: Boolean;
     FTrimThresholdDb: Double;
+    FOutChannels: Integer;
+    FOutSampleRate: Integer;
     FCachedFloorDb: Double;
     FLastFloorDb: Double;
   public
@@ -71,7 +73,8 @@ type
     destructor Destroy; override;
     function Start(const OutFile: string; Mic, Sys: Boolean;
       Quality: TAudioQuality; const MicDevice: string;
-      AutoPauseOnSilence: Boolean = False): Boolean;
+      AutoPauseOnSilence: Boolean = False;
+      OutChannels: Integer = 1; OutSampleRate: Integer = 16000): Boolean;
     procedure Stop;
     function IsRecording: Boolean;
     function CurrentFile: string;
@@ -427,6 +430,17 @@ begin
       ThrStr + 'dB:detection=rms:window=0.4,asetpts=N/SR/TB');
     P.Parameters.Add('-c:a'); P.Parameters.Add('libmp3lame');
     P.Parameters.Add('-q:a'); P.Parameters.Add('5');
+    // Keep the same channels / sample rate the live recording used,
+    // otherwise the post-trim pass would upsample voice back to 44.1k
+    // stereo and undo the size savings.
+    if FOutSampleRate > 0 then
+    begin
+      P.Parameters.Add('-ar'); P.Parameters.Add(IntToStr(FOutSampleRate));
+    end;
+    if FOutChannels > 0 then
+    begin
+      P.Parameters.Add('-ac'); P.Parameters.Add(IntToStr(FOutChannels));
+    end;
     P.Parameters.Add(TmpPath);
     P.Options := [poUsePipes, poNoConsole];
     try
@@ -698,7 +712,8 @@ end;
 
 function TAudioRecorder.Start(const OutFile: string; Mic, Sys: Boolean;
   Quality: TAudioQuality; const MicDevice: string;
-  AutoPauseOnSilence: Boolean): Boolean;
+  AutoPauseOnSilence: Boolean;
+  OutChannels: Integer; OutSampleRate: Integer): Boolean;
 var
   Bitrate, InputCount, SysIdx, MicIdx: Integer;
   ActualMic, SysFmt, SilenceChain, GraphPre, SilenceDetect: string;
@@ -939,7 +954,13 @@ begin
   FProcess.Parameters.Add('-map'); FProcess.Parameters.Add('[mixclean]');
   FProcess.Parameters.Add('-b:a');
   FProcess.Parameters.Add(IntToStr(Bitrate) + 'k');
+  // Resample / downmix on the encoder side. Defaults are voice-oriented:
+  // 16 kHz mono — adequate for speech, dramatically smaller files.
+  FProcess.Parameters.Add('-ar'); FProcess.Parameters.Add(IntToStr(OutSampleRate));
+  FProcess.Parameters.Add('-ac'); FProcess.Parameters.Add(IntToStr(OutChannels));
   FProcess.Parameters.Add(FOutputFile);
+  FOutChannels := OutChannels;
+  FOutSampleRate := OutSampleRate;
   FNeedTrimPostPass := AutoPauseOnSilence;
   FTrimThresholdDb := ThresholdDb;
 

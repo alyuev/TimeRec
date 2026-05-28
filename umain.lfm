@@ -234,6 +234,56 @@ object MainForm: TMainForm
           OnClick = miAudioQClick
         end
       end
+      object miAudioChannels: TMenuItem
+        Caption = #1050#1072#1085#1072#1083#1099
+        object miChMono: TMenuItem
+          Caption = #1052#1086#1085#1086
+          GroupIndex = 12
+          RadioItem = True
+          Checked = True
+          Tag = 1
+          OnClick = miAudioChClick
+        end
+        object miChStereo: TMenuItem
+          Caption = #1057#1090#1077#1088#1077#1086
+          GroupIndex = 12
+          RadioItem = True
+          Tag = 2
+          OnClick = miAudioChClick
+        end
+      end
+      object miAudioRate: TMenuItem
+        Caption = #1063#1072#1089#1090#1086#1090#1072' '#1076#1080#1089#1082#1088#1077#1090#1080#1079#1072#1094#1080#1080
+        object miRate16: TMenuItem
+          Caption = '16 '#1082#1043#1094
+          GroupIndex = 13
+          RadioItem = True
+          Checked = True
+          Tag = 16000
+          OnClick = miAudioRateClick
+        end
+        object miRate22: TMenuItem
+          Caption = '22 '#1082#1043#1094
+          GroupIndex = 13
+          RadioItem = True
+          Tag = 22050
+          OnClick = miAudioRateClick
+        end
+        object miRate44: TMenuItem
+          Caption = '44 '#1082#1043#1094
+          GroupIndex = 13
+          RadioItem = True
+          Tag = 44100
+          OnClick = miAudioRateClick
+        end
+        object miRate48: TMenuItem
+          Caption = '48 '#1082#1043#1094
+          GroupIndex = 13
+          RadioItem = True
+          Tag = 48000
+          OnClick = miAudioRateClick
+        end
+      end
       object miVadSens: TMenuItem
         Caption = #1063#1091#1074#1089#1090#1074#1080#1090#1077#1083#1100#1085#1086#1089#1090#1100' '#1040#1074#1090#1086#1076#1077#1090#1077#1082#1090#1072
         object miVadHigh: TMenuItem
