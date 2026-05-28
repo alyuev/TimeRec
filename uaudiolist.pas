@@ -20,12 +20,15 @@ type
     FOnHidden: TNotifyEvent;
     FPopup: TPopupMenu;
     FPendingPlayPath: string;
+    FSortCol: Integer;
+    FSortAsc: Boolean;
     procedure DoPlayPending(Data: PtrInt);
     procedure GridEditingDone(Sender: TObject);
     procedure GridSelectEditor(Sender: TObject; aCol, aRow: Integer;
       var Editor: TWinControl);
     procedure GridMouseDown(Sender: TObject; Button: TMouseButton;
       Shift: TShiftState; X, Y: Integer);
+    procedure GridHeaderClick(Sender: TObject; IsColumn: Boolean; Index: Integer);
     procedure GridKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
     procedure FormCloseQueryEv(Sender: TObject; var CanClose: Boolean);
     procedure MenuDeleteClick(Sender: TObject);
@@ -34,11 +37,14 @@ type
     function RemoveRefs(const AName: string): Integer;
     procedure DoRename(Row: Integer; const NewName: string);
     function FormatSize(Bytes: Int64): string;
+    procedure UpdateCaption;
+    procedure UpdateHeaderArrows;
   public
     constructor CreateNew(AOwner: TComponent; Num: Integer = 0); override;
     destructor Destroy; override;
     procedure SetDirs(const AudioDir, DataDir: string);
     procedure RefreshList;
+    procedure FocusFirstRowForTask(const TaskName: string);
     property OnHidden: TNotifyEvent read FOnHidden write FOnHidden;
   end;
 
@@ -55,6 +61,8 @@ begin
   KeyPreview := True;
   OnCloseQuery := @FormCloseQueryEv;
   FOriginalNames := TStringList.Create;
+  FSortCol := 4;     // date column
+  FSortAsc := False; // newest first
 
   FGrid := TStringGrid.Create(Self);
   FGrid.Parent := Self;
@@ -89,6 +97,7 @@ begin
   FGrid.OnSelectEditor := @GridSelectEditor;
   FGrid.OnMouseDown := @GridMouseDown;
   FGrid.OnKeyDown := @GridKeyDown;
+  FGrid.OnHeaderClick := @GridHeaderClick;
 
   FPopup := TPopupMenu.Create(Self);
   AddPopupItem('Удалить файл...', @MenuDeleteClick);
@@ -124,6 +133,33 @@ procedure TAudioListForm.SetDirs(const AudioDir, DataDir: string);
 begin
   FAudioDir := IncludeTrailingPathDelimiter(AudioDir);
   FDataDir  := IncludeTrailingPathDelimiter(DataDir);
+  UpdateCaption;
+end;
+
+procedure TAudioListForm.UpdateCaption;
+begin
+  if FAudioDir <> '' then
+    Caption := 'Записи аудио — ' + ExcludeTrailingPathDelimiter(FAudioDir)
+  else
+    Caption := 'Записи аудио';
+end;
+
+procedure TAudioListForm.UpdateHeaderArrows;
+const
+  HdrText: array[0..5] of string =
+    ('▶', 'Имя файла', 'Длит.', 'Размер', 'Дата записи', 'Задача');
+var
+  i: Integer;
+  Arrow: string;
+begin
+  for i := 0 to 5 do
+  begin
+    if (i = FSortCol) then
+      if FSortAsc then Arrow := ' ↑' else Arrow := ' ↓'
+    else
+      Arrow := '';
+    FGrid.Cells[i, 0] := HdrText[i] + Arrow;
+  end;
 end;
 
 function TAudioListForm.FormatSize(Bytes: Int64): string;
@@ -214,6 +250,8 @@ type
     Name: string;
     Size: Int64;
     Time: TDateTime;
+    DurationSec: Double;
+    Task: string;
   end;
   TFileInfoArr = array of TFileInfo;
 
@@ -301,6 +339,28 @@ begin
   end;
 end;
 
+function CompareFileInfo(const A, B: TFileInfo;
+  SortCol: Integer; Asc: Boolean): Integer;
+  // Returns negative / 0 / positive a-la strcmp.
+  function NumDiff(x, y: Double): Integer;
+  begin
+    if x < y then Result := -1
+    else if x > y then Result := 1
+    else Result := 0;
+  end;
+begin
+  case SortCol of
+    1: Result := CompareText(A.Name, B.Name);
+    2: Result := NumDiff(A.DurationSec, B.DurationSec);
+    3: Result := NumDiff(A.Size, B.Size);
+    5: Result := CompareText(A.Task, B.Task);
+  else
+    // default / col 4: by date
+    Result := NumDiff(A.Time, B.Time);
+  end;
+  if not Asc then Result := -Result;
+end;
+
 procedure TAudioListForm.RefreshList;
 var
   SR: TSearchRec;
@@ -308,57 +368,110 @@ var
   i, j: Integer;
   Tmp: TFileInfo;
   TaskMap: TStringList;
-  TaskName: string;
 begin
   SetLength(Items, 0);
   if (FAudioDir = '') or (not DirectoryExists(FAudioDir)) then
   begin
     FGrid.RowCount := 1;
+    UpdateHeaderArrows;
     Exit;
   end;
-  if FindFirst(FAudioDir + '*.mp3', faAnyFile and not faDirectory, SR) = 0 then
-  try
-    repeat
-      if (SR.Attr and faDirectory) = 0 then
-      begin
-        SetLength(Items, Length(Items) + 1);
-        Items[High(Items)].Name := SR.Name;
-        Items[High(Items)].Size := SR.Size;
-        Items[High(Items)].Time := FileDateToDateTime(LongInt(SR.Time));
-      end;
-    until FindNext(SR) <> 0;
-  finally
-    SysUtils.FindClose(SR);
-  end;
-
-  // Sort by date descending.
-  for i := 0 to High(Items) - 1 do
-    for j := i + 1 to High(Items) do
-      if Items[j].Time > Items[i].Time then
-      begin
-        Tmp := Items[i]; Items[i] := Items[j]; Items[j] := Tmp;
-      end;
-
   TaskMap := TStringList.Create;
   try
     BuildTaskMap(FDataDir, TaskMap);
-    FGrid.RowCount := Length(Items) + 1;
-    FOriginalNames.Clear;
-    FOriginalNames.Add('');
-    for i := 0 to High(Items) do
-    begin
-      TaskName := TaskMap.Values[Items[i].Name];
-      FGrid.Cells[0, i + 1] := '▶';
-      FGrid.Cells[1, i + 1] := Items[i].Name;
-      FGrid.Cells[2, i + 1] := FormatDur(GetMp3DurationSec(FAudioDir + Items[i].Name));
-      FGrid.Cells[3, i + 1] := FormatSize(Items[i].Size);
-      FGrid.Cells[4, i + 1] := FormatDateTime('yyyy-mm-dd hh:nn:ss', Items[i].Time);
-      FGrid.Cells[5, i + 1] := TaskName;
-      FOriginalNames.Add(Items[i].Name);
+    if FindFirst(FAudioDir + '*.mp3', faAnyFile and not faDirectory, SR) = 0 then
+    try
+      repeat
+        if (SR.Attr and faDirectory) = 0 then
+        begin
+          SetLength(Items, Length(Items) + 1);
+          Items[High(Items)].Name := SR.Name;
+          Items[High(Items)].Size := SR.Size;
+          Items[High(Items)].Time := FileDateToDateTime(LongInt(SR.Time));
+          Items[High(Items)].DurationSec := GetMp3DurationSec(FAudioDir + SR.Name);
+          Items[High(Items)].Task := TaskMap.Values[SR.Name];
+        end;
+      until FindNext(SR) <> 0;
+    finally
+      SysUtils.FindClose(SR);
     end;
   finally
     TaskMap.Free;
   end;
+
+  // O(n²) sort — fine for typical recording counts.
+  for i := 0 to High(Items) - 1 do
+    for j := i + 1 to High(Items) do
+      if CompareFileInfo(Items[i], Items[j], FSortCol, FSortAsc) > 0 then
+      begin
+        Tmp := Items[i]; Items[i] := Items[j]; Items[j] := Tmp;
+      end;
+
+  FGrid.RowCount := Length(Items) + 1;
+  FOriginalNames.Clear;
+  FOriginalNames.Add('');
+  for i := 0 to High(Items) do
+  begin
+    FGrid.Cells[0, i + 1] := '▶';
+    FGrid.Cells[1, i + 1] := Items[i].Name;
+    FGrid.Cells[2, i + 1] := FormatDur(Items[i].DurationSec);
+    FGrid.Cells[3, i + 1] := FormatSize(Items[i].Size);
+    FGrid.Cells[4, i + 1] := FormatDateTime('yyyy-mm-dd hh:nn:ss', Items[i].Time);
+    FGrid.Cells[5, i + 1] := Items[i].Task;
+    FOriginalNames.Add(Items[i].Name);
+  end;
+  UpdateHeaderArrows;
+end;
+
+procedure TAudioListForm.GridHeaderClick(Sender: TObject; IsColumn: Boolean;
+  Index: Integer);
+var
+  KeepName: string;
+  i: Integer;
+begin
+  if not IsColumn then Exit;
+  if Index = 0 then Exit;  // play column not sortable
+  if Index = FSortCol then FSortAsc := not FSortAsc
+  else
+  begin
+    FSortCol := Index;
+    FSortAsc := True;
+  end;
+  // Remember which file the user had selected so we can restore the
+  // cursor after the rows are reshuffled.
+  KeepName := '';
+  if (FGrid.Row >= 1) and (FGrid.Row < FGrid.RowCount) then
+    KeepName := FGrid.Cells[1, FGrid.Row];
+  RefreshList;
+  if KeepName <> '' then
+    for i := 1 to FGrid.RowCount - 1 do
+      if FGrid.Cells[1, i] = KeepName then
+      begin
+        FGrid.Row := i;
+        if FGrid.TopRow > i then FGrid.TopRow := i
+        else if i >= FGrid.TopRow + FGrid.VisibleRowCount then
+          FGrid.TopRow := i - FGrid.VisibleRowCount + 1;
+        Break;
+      end;
+end;
+
+procedure TAudioListForm.FocusFirstRowForTask(const TaskName: string);
+var
+  i: Integer;
+  T: string;
+begin
+  if Trim(TaskName) = '' then Exit;
+  T := LowerCase(Trim(TaskName));
+  for i := 1 to FGrid.RowCount - 1 do
+    if LowerCase(Trim(FGrid.Cells[5, i])) = T then
+    begin
+      FGrid.Row := i;
+      // Ensure visible: scroll the grid so this row is in view.
+      if FGrid.TopRow > i then FGrid.TopRow := i
+      else if i >= FGrid.TopRow + FGrid.VisibleRowCount then
+        FGrid.TopRow := i - FGrid.VisibleRowCount + 1;
+      Exit;
+    end;
 end;
 
 procedure TAudioListForm.GridSelectEditor(Sender: TObject; aCol, aRow: Integer;
