@@ -1,12 +1,12 @@
 object MainForm: TMainForm
   Left = 200
   Top = 200
-  Width = 340
+  Width = 320
   Height = 80
   BorderStyle = bsNone
   Caption = 'TimeRec'
   ClientHeight = 80
-  ClientWidth = 340
+  ClientWidth = 320
   Color = clBtnFace
   Font.Height = -11
   Font.Name = 'Tahoma'
@@ -37,12 +37,13 @@ object MainForm: TMainForm
     Width = 50
     Height = 13
     Caption = '0'#1084#1080#1085
+    Visible = False
     OnMouseDown = FormMouseDown
   end
   object cbTask: TComboBox
-    Left = 84
+    Left = 30
     Top = 5
-    Width = 156
+    Width = 206
     Height = 21
     ItemHeight = 13
     TabOrder = 0
@@ -52,9 +53,9 @@ object MainForm: TMainForm
     OnSelect = cbTaskSelect
   end
   object btnStartStop: TButton
-    Left = 244
+    Left = 240
     Top = 2
-    Width = 92
+    Width = 76
     Height = 28
     Caption = #1057#1076#1077#1083#1072#1085#1086
     TabOrder = 1
@@ -63,7 +64,7 @@ object MainForm: TMainForm
   object pbSlider: TPaintBox
     Left = 4
     Top = 32
-    Width = 332
+    Width = 312
     Height = 22
     OnMouseDown = pbSliderMouseDown
     OnMouseLeave = pbSliderMouseLeave
@@ -116,9 +117,9 @@ object MainForm: TMainForm
     OnClick = btnSysClick
   end
   object btnRec: TSpeedButton
-    Left = 80
+    Left = 112
     Top = 56
-    Width = 60
+    Width = 68
     Height = 22
     AllowAllUp = True
     GroupIndex = 3
@@ -127,7 +128,7 @@ object MainForm: TMainForm
     OnClick = btnRecClick
   end
   object btnVAD: TSpeedButton
-    Left = 144
+    Left = 80
     Top = 56
     Width = 28
     Height = 22
@@ -143,14 +144,14 @@ object MainForm: TMainForm
     OnClick = btnVADClick
   end
   object lblAudio: TLabel
-    Left = 176
+    Left = 184
     Top = 60
-    Width = 140
+    Width = 112
     Height = 14
     Caption = ''
   end
   object btnAudioList: TSpeedButton
-    Left = 318
+    Left = 298
     Top = 56
     Width = 18
     Height = 22

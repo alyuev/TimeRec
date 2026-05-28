@@ -156,6 +156,7 @@ type
     procedure RefreshMicDropdownVisibility;
     procedure AnchorAudioListForm;
     procedure RememberPendingAudioTasks(const TaskName: string);
+    procedure UpdateAudioBtnGlyphs;
     procedure StartRecording;
     procedure StopRecording;
     procedure UpdateAudioStatus;
@@ -340,10 +341,10 @@ begin
   if btnStartStop.HandleAllocated then
     SetWindowLong(btnStartStop.Handle, GWL_STYLE,
       GetWindowLong(btnStartStop.Handle, GWL_STYLE) or $00002000); // BS_MULTILINE
-  // LFM placeholders are 'M'/'S'; assign real emoji glyphs at runtime
-  // because LFM #NNNN only supports the BMP and 🎤/🔊 live above U+FFFF.
-  btnMic.Caption := #$F0#$9F#$8E#$A4;  // 🎤
-  btnSys.Caption := #$F0#$9F#$94#$8A;  // 🔊
+  // LFM placeholders are 'M'/'S'; we paint the real emoji glyphs at
+  // runtime (LFM #NNNN can't encode supplementary-plane chars). The
+  // caption toggles between on/off variants in UpdateAudioBtnGlyphs.
+  UpdateAudioBtnGlyphs;
   RefreshMicDropdownVisibility;
   FormResize(nil);
 
@@ -413,24 +414,24 @@ var
 begin
   if not HandleAllocated then Exit;
   if btnMic.Visible then BaseH := 80 else BaseH := 54;
-  BaseW := 340;
+  BaseW := 320;
   WantH := Round(Width * BaseH / BaseW);
   if Height <> WantH then Height := WantH;
   S := Width / BaseW;
   NewFont := -Round(FontBase * S);
   Font.Height := NewFont;
   btnSettings.SetBounds  (Round(4 * S),   Round(2 * S),  Round(22 * S),  Round(28 * S));
-  lblTodayTotal.SetBounds(Round(30 * S),  Round(10 * S), Round(50 * S),  Round(13 * S));
   lblTodayTotal.Font.Height := NewFont;
-  cbTask.SetBounds       (Round(84 * S),  Round(5 * S),  Round(156 * S), Round(21 * S));
-  btnStartStop.SetBounds (Round(244 * S), Round(2 * S),  Round(92 * S),  Round(28 * S));
-  pbSlider.SetBounds     (Round(4 * S),   Round(32 * S), Round(332 * S), Round(22 * S));
+  cbTask.SetBounds       (Round(30 * S),  Round(5 * S),  Round(206 * S), Round(21 * S));
+  btnStartStop.SetBounds (Round(240 * S), Round(2 * S),  Round(76 * S),  Round(28 * S));
+  pbSlider.SetBounds     (Round(4 * S),   Round(32 * S), Round(312 * S), Round(22 * S));
   btnMic.SetBounds       (Round(4 * S),   Round(56 * S), Round(28 * S),  Round(22 * S));
   btnMicDrop.SetBounds   (Round(32 * S),  Round(56 * S), Round(12 * S),  Round(22 * S));
   btnSys.SetBounds       (Round(48 * S),  Round(56 * S), Round(28 * S),  Round(22 * S));
-  btnRec.SetBounds       (Round(80 * S),  Round(56 * S), Round(60 * S),  Round(22 * S));
-  btnVAD.SetBounds       (Round(144 * S), Round(56 * S), Round(28 * S),  Round(22 * S));
-  lblAudio.SetBounds     (Round(176 * S), Round(60 * S), Round(160 * S), Round(14 * S));
+  btnVAD.SetBounds       (Round(80 * S),  Round(56 * S), Round(28 * S),  Round(22 * S));
+  btnRec.SetBounds       (Round(112 * S), Round(56 * S), Round(68 * S),  Round(22 * S));
+  lblAudio.SetBounds     (Round(184 * S), Round(60 * S), Round(112 * S), Round(14 * S));
+  btnAudioList.SetBounds (Round(298 * S), Round(56 * S), Round(18 * S),  Round(22 * S));
   lblAudio.Font.Height := NewFont;
   Application.QueueAsyncCall(@DeselectCombo, 0);
 end;
@@ -1802,6 +1803,7 @@ end;
 
 procedure TMainForm.btnMicClick(Sender: TObject);
 begin
+  UpdateAudioBtnGlyphs;
   SaveConfig;
   if FAudioRecorder.IsRecording then
   begin
@@ -1813,6 +1815,7 @@ end;
 
 procedure TMainForm.btnSysClick(Sender: TObject);
 begin
+  UpdateAudioBtnGlyphs;
   SaveConfig;
   if FAudioRecorder.IsRecording then
   begin
@@ -1857,6 +1860,21 @@ begin
     FAudioListForm.Show;
     btnAudioList.Caption := #$E2#$96#$B4;  // ▴
   end;
+end;
+
+procedure TMainForm.UpdateAudioBtnGlyphs;
+const
+  Mic    = #$F0#$9F#$8E#$A4;  // 🎤
+  SpkOn  = #$F0#$9F#$94#$8A;  // 🔊
+  SpkOff = #$F0#$9F#$94#$87;  // 🔇 muted speaker
+begin
+  btnMic.Caption := Mic;
+  // No standard «muted mic» emoji exists, and combining-stroke marks
+  // (U+0338/U+0336) don't render on emoji in Segoe UI Emoji — use the
+  // font's strikethrough style instead, it does cross the glyph out.
+  if btnMic.Down then btnMic.Font.Style := [fsBold]
+  else                btnMic.Font.Style := [fsStrikeOut];
+  if btnSys.Down then btnSys.Caption := SpkOn else btnSys.Caption := SpkOff;
 end;
 
 procedure TMainForm.RememberPendingAudioTasks(const TaskName: string);
@@ -2467,6 +2485,7 @@ begin
       if S = '0' then btnMic.Down := False else btnMic.Down := True;
       S := Root.GetAttribute('recSys');
       if S = '1' then btnSys.Down := True else btnSys.Down := False;
+      UpdateAudioBtnGlyphs;
       S := Root.GetAttribute('vad');
       if S = '1' then btnVAD.Down := True else btnVAD.Down := False;
       S := Root.GetAttribute('vadSens');
