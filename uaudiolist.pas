@@ -266,6 +266,39 @@ begin
   finally
     SysUtils.FindClose(SR);
   end;
+
+  // Fallback: pending-task tags written by the main form on Stop for
+  // recordings whose segment hasn't been finalised yet. Day-xml
+  // entries above take priority (we only fill the gaps).
+  if FileExists(DataDir + 'audio_tasks.xml') then
+  begin
+    Doc := nil;
+    try
+      try ReadXMLFile(Doc, DataDir + 'audio_tasks.xml') except Doc := nil end;
+      if Doc <> nil then
+      begin
+        Root := Doc.DocumentElement;
+        if Root <> nil then
+        begin
+          Aud := Root.FirstChild;
+          while Aud <> nil do
+          begin
+            if (Aud.NodeType = ELEMENT_NODE) and (Aud.NodeName = 'audio') then
+            begin
+              AudKey := TDOMElement(Aud).GetAttribute('path');
+              TaskName := TDOMElement(Aud).GetAttribute('task');
+              if (AudKey <> '') and (TaskName <> '') and
+                 (Map.IndexOfName(AudKey) < 0) then
+                Map.Values[AudKey] := TaskName;
+            end;
+            Aud := Aud.NextSibling;
+          end;
+        end;
+      end;
+    finally
+      Doc.Free;
+    end;
+  end;
 end;
 
 procedure TAudioListForm.RefreshList;

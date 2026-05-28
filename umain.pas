@@ -143,6 +143,7 @@ type
     FMicDropMenu: TPopupMenu;
     procedure RefreshMicDropdownVisibility;
     procedure AnchorAudioListForm;
+    procedure RememberPendingAudioTasks(const TaskName: string);
     procedure StartRecording;
     procedure StopRecording;
     procedure UpdateAudioStatus;
@@ -1844,6 +1845,65 @@ begin
   end;
 end;
 
+procedure TMainForm.RememberPendingAudioTasks(const TaskName: string);
+// Persist file→task associations to data/audio_tasks.xml so the
+// audio list panel can show a meaningful task name for recordings
+// whose owning segment hasn't been finalized via "Сделано" yet.
+var
+  Path, FileBase: string;
+  Doc: TXMLDocument;
+  Root, Node, NextNode, El: TDOMNode;
+  i: Integer;
+  Existing: TStringList;
+begin
+  if (FAudioFilesForSegment = nil) or (FAudioFilesForSegment.Count = 0) then Exit;
+  Path := IncludeTrailingPathDelimiter(FDataDir) + 'audio_tasks.xml';
+  Doc := nil;
+  Existing := TStringList.Create;
+  try
+    Existing.CaseSensitive := False;
+    for i := 0 to FAudioFilesForSegment.Count - 1 do
+      Existing.Add(ExtractFileName(FAudioFilesForSegment[i]));
+
+    if FileExists(Path) then
+      try ReadXMLFile(Doc, Path) except Doc := nil end;
+    if Doc = nil then
+    begin
+      Doc := TXMLDocument.Create;
+      Doc.AppendChild(Doc.CreateElement('pending'));
+    end;
+    Root := Doc.DocumentElement;
+
+    // Remove any existing entries for our files (we'll re-add with
+    // the current task name).
+    Node := Root.FirstChild;
+    while Node <> nil do
+    begin
+      NextNode := Node.NextSibling;
+      if (Node.NodeType = ELEMENT_NODE) and (Node.NodeName = 'audio') then
+      begin
+        if Existing.IndexOf(TDOMElement(Node).GetAttribute('path')) >= 0 then
+          Root.RemoveChild(Node);
+      end;
+      Node := NextNode;
+    end;
+
+    for i := 0 to Existing.Count - 1 do
+    begin
+      FileBase := Existing[i];
+      El := Doc.CreateElement('audio');
+      TDOMElement(El).SetAttribute('path', FileBase);
+      TDOMElement(El).SetAttribute('task', TaskName);
+      Root.AppendChild(El);
+    end;
+
+    WriteXMLFile(Doc, Path);
+  finally
+    Existing.Free;
+    Doc.Free;
+  end;
+end;
+
 procedure TMainForm.AnchorAudioListForm;
 var
   NewLeft, NewTop, ScrW: Integer;
@@ -2116,6 +2176,14 @@ begin
     btnRec.Caption := #$E2#$97#$8F + ' REC';
     btnRec.Invalidate;
     UpdateAudioStatus;
+    // Tag the just-finished files with the task name currently typed
+    // into the combobox, so they show that task in the list even
+    // before the user presses "Сделано". When the segment is later
+    // finalized, the day XML's entry wins (BuildTaskMap reads it
+    // first); these tags only serve as a fallback for not-yet-
+    // finalized recordings.
+    if Trim(cbTask.Text) <> '' then
+      RememberPendingAudioTasks(cbTask.Text);
   except
     on E: Exception do
     begin
