@@ -457,7 +457,7 @@ end;
 
 procedure TAudioListForm.FocusFirstRowForTask(const TaskName: string);
 var
-  i: Integer;
+  i, MaxTop: Integer;
   T: string;
 begin
   if Trim(TaskName) = '' then Exit;
@@ -466,10 +466,13 @@ begin
     if LowerCase(Trim(FGrid.Cells[5, i])) = T then
     begin
       FGrid.Row := i;
-      // Ensure visible: scroll the grid so this row is in view.
-      if FGrid.TopRow > i then FGrid.TopRow := i
-      else if i >= FGrid.TopRow + FGrid.VisibleRowCount then
-        FGrid.TopRow := i - FGrid.VisibleRowCount + 1;
+      // Park the found row at the top of the visible area. Don't
+      // scroll past the last possible top position, otherwise the
+      // grid clamps and the row ends up near the bottom anyway.
+      MaxTop := FGrid.RowCount - FGrid.VisibleRowCount;
+      if MaxTop < FGrid.FixedRows then MaxTop := FGrid.FixedRows;
+      if i > MaxTop then FGrid.TopRow := MaxTop
+      else                FGrid.TopRow := i;
       Exit;
     end;
 end;

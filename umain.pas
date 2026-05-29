@@ -19,6 +19,7 @@ type
     btnRec: TSpeedButton;
     btnVAD: TSpeedButton;
     btnAudioList: TSpeedButton;
+    btnPlay: TSpeedButton;
     cbTask: TComboBox;
     lblTodayTotal: TLabel;
     lblAudio: TLabel;
@@ -103,6 +104,7 @@ type
     procedure miAudioChClick(Sender: TObject);
     procedure miAudioRateClick(Sender: TObject);
     procedure btnAudioListClick(Sender: TObject);
+    procedure btnPlayClick(Sender: TObject);
     procedure AudioListHidden(Sender: TObject);
     procedure btnMicDropClick(Sender: TObject);
     procedure MicDropMenuClick(Sender: TObject);
@@ -208,6 +210,12 @@ uses
   ComObj, ActiveX, ustats, uedit, utaskedit;
 
 const
+  // Form's «native» canvas size. FormResize, the borderless drag-
+  // resize handler and config-load size normalisation all key off
+  // this; changing the LFM means updating these to match.
+  FormBaseW = 320;
+  FormBaseH = 80;
+
   CLSID_TaskbarList: TGUID = '{56FDF344-FD6D-11d0-958A-006097C9A090}';
   SID_ITaskbarList  = '{56FDF342-FD6D-11d0-958A-006097C9A090}';
 
@@ -348,6 +356,14 @@ begin
   RefreshMicDropdownVisibility;
   FormResize(nil);
 
+  btnMic.Hint := 'Записывать с микрофона';
+  btnMicDrop.Hint := 'Выбор микрофона';
+  btnSys.Hint := 'Записывать системный звук';
+  btnVAD.Hint := 'Автопауза при тишине';
+  btnRec.Hint := 'Запись аудио';
+  btnPlay.Hint := 'Проиграть последнюю запись';
+  btnAudioList.Hint := 'Список аудио записей';
+
   // Apply persisted opacity. The control lives in a slider dialog now,
   // so no checked-state to sync.
   if FOpacitySupported then
@@ -413,8 +429,8 @@ var
   S: Double;
 begin
   if not HandleAllocated then Exit;
-  if btnMic.Visible then BaseH := 80 else BaseH := 54;
-  BaseW := 320;
+  if btnMic.Visible then BaseH := FormBaseH else BaseH := 54;
+  BaseW := FormBaseW;
   WantH := Round(Width * BaseH / BaseW);
   if Height <> WantH then Height := WantH;
   S := Width / BaseW;
@@ -430,8 +446,9 @@ begin
   btnSys.SetBounds       (Round(48 * S),  Round(56 * S), Round(28 * S),  Round(22 * S));
   btnVAD.SetBounds       (Round(80 * S),  Round(56 * S), Round(28 * S),  Round(22 * S));
   btnRec.SetBounds       (Round(112 * S), Round(56 * S), Round(68 * S),  Round(22 * S));
-  lblAudio.SetBounds     (Round(184 * S), Round(60 * S), Round(112 * S), Round(14 * S));
-  btnAudioList.SetBounds (Round(298 * S), Round(56 * S), Round(18 * S),  Round(22 * S));
+  btnPlay.SetBounds      (Round(182 * S), Round(56 * S), Round(24 * S),  Round(22 * S));
+  lblAudio.SetBounds     (Round(210 * S), Round(60 * S), Round(80 * S),  Round(14 * S));
+  btnAudioList.SetBounds (Round(292 * S), Round(56 * S), Round(24 * S),  Round(22 * S));
   lblAudio.Font.Height := NewFont;
   Application.QueueAsyncCall(@DeselectCombo, 0);
 end;
@@ -528,9 +545,8 @@ begin
             GHighlightedIdx := -1;
           end;
           SendMessage(Combo, CB_SHOWDROPDOWN_, 0, 0);
-          // Move focus to Start button — deferred so Enter doesn't click it
-          if GMainHwnd <> 0 then
-            PostMessage(GMainHwnd, WM_APP_FOCUS_START, 0, 0);
+          // Stay focused on the combobox after Enter — user can keep
+          // editing the picked task without an extra Tab.
           Exit(0);
         end;
     end;
@@ -586,8 +602,8 @@ function NewWndProc(h: HWND; uMsg: UINT; wParam: WPARAM;
   lParam: LPARAM): LRESULT; stdcall;
 const
   EdgePx = 4;
-  BaseW = 340;
-  BaseH = 80;
+  BaseW = FormBaseW;
+  BaseH = FormBaseH;
   AspectRatio: Double = BaseW / BaseH;
   SC_SIZE_CMD = $F000;
 var
@@ -1129,7 +1145,7 @@ begin
     FJustSelected := False;
     Exit;
   end;
-  if UTF8Length(cbTask.Text) >= 3 then
+  if UTF8Length(cbTask.Text) >= 2 then
     ApplyComboFilter
   else
     RestoreFullList;
@@ -1156,12 +1172,11 @@ procedure TMainForm.DeselectCombo(Data: PtrInt);
 const
   CB_SETEDITSEL = $0142;
 begin
-  // After dropdown selection: clear selection AND move focus off so the
-  // edit no longer paints the highlight.
+  // After dropdown selection: clear the text-selection highlight in the
+  // edit but keep focus on the combobox itself, so the user stays able
+  // to keep typing/editing without an extra Tab.
   if cbTask.HandleAllocated then
     SendMessage(cbTask.Handle, CB_SETEDITSEL, 0, 0);
-  if btnStartStop.CanFocus then
-    btnStartStop.SetFocus;
 end;
 
 procedure TMainForm.ClearComboSelection(Data: PtrInt);
@@ -1608,7 +1623,7 @@ begin
       '    скрытие из панели задач) сохраняются автоматически.' + LineEnding +
       LineEnding +
       'Поле задачи' + LineEnding +
-      '  • Поиск с третьего символа, по подстроке, многословный' + LineEnding +
+      '  • Поиск со второго символа, по подстроке, многословный' + LineEnding +
       '    (порядок слов не важен).' + LineEnding +
       '  • Полный список задач — клик по треугольнику.' + LineEnding +
       '  • Список отсортирован по последнему использованию.' + LineEnding +
@@ -1834,7 +1849,42 @@ end;
 
 procedure TMainForm.AudioListHidden(Sender: TObject);
 begin
-  btnAudioList.Caption := #$E2#$96#$BE;  // ▾
+  btnAudioList.Caption := #$E2#$96#$BC;  // ▼
+end;
+
+procedure TMainForm.btnPlayClick(Sender: TObject);
+// Plays the most recently modified .mp3 in the audio folder.
+var
+  Dir, Newest: string;
+  SR: TSearchRec;
+  NewestTime, T: TDateTime;
+begin
+  Dir := IncludeTrailingPathDelimiter(ResolvedAudioDir);
+  if not DirectoryExists(Dir) then Exit;
+  Newest := '';
+  NewestTime := 0;
+  if FindFirst(Dir + '*.mp3', faAnyFile and not faDirectory, SR) = 0 then
+  try
+    repeat
+      if (SR.Attr and faDirectory) = 0 then
+      begin
+        T := FileDateToDateTime(LongInt(SR.Time));
+        if T > NewestTime then
+        begin
+          NewestTime := T;
+          Newest := SR.Name;
+        end;
+      end;
+    until FindNext(SR) <> 0;
+  finally
+    SysUtils.FindClose(SR);
+  end;
+  if Newest = '' then
+  begin
+    ShowMessage('В папке записей нет mp3-файлов.');
+    Exit;
+  end;
+  ShellExecuteW(0, nil, PWideChar(UnicodeString(Dir + Newest)), nil, nil, 1);
 end;
 
 procedure TMainForm.btnAudioListClick(Sender: TObject);
@@ -1848,7 +1898,7 @@ begin
   if FAudioListForm.Visible then
   begin
     FAudioListForm.Hide;
-    btnAudioList.Caption := #$E2#$96#$BE;  // ▾
+    btnAudioList.Caption := #$E2#$96#$BC;  // ▼
   end
   else
   begin
@@ -1857,7 +1907,7 @@ begin
     FAudioListForm.FocusFirstRowForTask(cbTask.Text);
     AnchorAudioListForm;
     FAudioListForm.Show;
-    btnAudioList.Caption := #$E2#$96#$B4;  // ▴
+    btnAudioList.Caption := #$E2#$96#$B2;  // ▲
   end;
 end;
 
@@ -2061,6 +2111,7 @@ begin
   btnSys.Visible     := HasMic;
   btnRec.Visible     := HasMic;
   btnVAD.Visible     := HasMic;
+  btnPlay.Visible    := HasMic;
   lblAudio.Visible   := HasMic;
   miAudio.Enabled    := HasMic;
   if HasMic then
@@ -2262,10 +2313,7 @@ begin
   end
   else
   begin
-    if FAudioFilesForSegment.Count > 0 then
-      S := Format('к задаче: %d файл(ов)', [FAudioFilesForSegment.Count])
-    else
-      S := '';
+    S := '';
   end;
   lblAudio.Caption := S;
 end;
@@ -2446,9 +2494,9 @@ begin
       S := Root.GetAttribute('top');    if TryStrToInt(S, V) then Top := V;
       S := Root.GetAttribute('width');  if TryStrToInt(S, V) then Width  := V;
       S := Root.GetAttribute('height'); if TryStrToInt(S, V) then Height := V;
-      // Normalize: v3 form is 340x80 (audio row added below the slider).
-      if Height < 80 then Height := 80;
-      Width := Round(Height * 340 / 80);
+      // Normalise to the form's base aspect ratio.
+      if Height < FormBaseH then Height := FormBaseH;
+      Width := Round(Height * FormBaseW / FormBaseH);
       S := Root.GetAttribute('topMost');
       if S = '0' then
         miTopMost.Checked := False;
