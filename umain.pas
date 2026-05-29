@@ -134,6 +134,10 @@ type
     FLockedMs: Int64;
     FSliderDragging: Boolean;
     FGrabX1, FGrabX2: Integer; // hitbox for drag (flag + "now" label)
+    FStartHitL, FStartHitR: Integer;
+    FDurHitL,   FDurHitR:   Integer;
+    FNowHitL,   FNowHitR:   Integer;
+    FFlagHitL,  FFlagHitR:  Integer;
     FLazyCureDir: string;
     FOpacityLbl: TLabel;
     FOpacitySupported: Boolean;
@@ -363,6 +367,17 @@ begin
   btnRec.Hint := 'Запись аудио';
   btnPlay.Hint := 'Проиграть последнюю запись';
   btnAudioList.Hint := 'Список аудио записей';
+
+  btnSettings.ShowHint := True;
+  btnSettings.Hint := 'Меню настроек';
+  cbTask.ShowHint := True;
+  cbTask.Hint := 'Текущая задача (введите 2 символа для поиска)';
+  btnStartStop.ShowHint := True;
+  btnStartStop.Hint := 'Завершить текущую задачу';
+  pbSlider.ShowHint := True;
+  pbSlider.Hint := 'Время текущей задачи. Перетащите флажок для изменения длительности последней задачи';
+  lblAudio.ShowHint := True;
+  lblAudio.Hint := 'Время текущей аудиозаписи';
 
   // Apply persisted opacity. The control lives in a slider dialog now,
   // so no checked-state to sync.
@@ -836,8 +851,20 @@ end;
 
 procedure TMainForm.pbSliderMouseMove(Sender: TObject; Shift: TShiftState;
   X, Y: Integer);
+var
+  H: string;
 begin
-  if FSliderDragging then UpdateSliderFromX(X);
+  if FSliderDragging then begin UpdateSliderFromX(X); Exit; end;
+  if      (X >= FFlagHitL)  and (X <= FFlagHitR)  then H := 'Флажок: перетащите для изменения длительности последней задачи'
+  else if (X >= FNowHitL)   and (X <= FNowHitR)   then H := 'Текущее время (положение флажка)'
+  else if (X >= FDurHitL)   and (X <= FDurHitR)   then H := 'Длительность задачи'
+  else if (X >= FStartHitL) and (X <= FStartHitR) then H := 'Время начала задачи'
+  else H := 'Время текущей задачи. Перетащите флажок для изменения длительности последней задачи';
+  if pbSlider.Hint <> H then
+  begin
+    pbSlider.Hint := H;
+    Application.CancelHint;
+  end;
 end;
 
 procedure TMainForm.pbSliderMouseUp(Sender: TObject; Button: TMouseButton;
@@ -946,6 +973,11 @@ begin
   // from the start of the "now-at-flag" label through past the flag.
   FGrabX1 := NowX - 2;
   FGrabX2 := ThumbX + 4;
+
+  FStartHitL := StartX;             FStartHitR := StartX + StartW;
+  FDurHitL   := DurX;               FDurHitR   := DurX + DurW;
+  FNowHitL   := NowX;               FNowHitR   := NowX + NowW;
+  FFlagHitL  := ThumbX - 8;         FFlagHitR  := ThumbX + 4;
 end;
 
 procedure TMainForm.btnSettingsClick(Sender: TObject);
