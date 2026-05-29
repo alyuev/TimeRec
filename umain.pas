@@ -198,6 +198,7 @@ type
     procedure DeselectCombo(Data: PtrInt);
     procedure ClearComboSelection(Data: PtrInt);
     procedure DeferredStartFromEnter(Data: PtrInt);
+    procedure CloseDropAndStart;
     procedure DeferredFocusStart(Data: PtrInt);
   protected
     procedure WndProc(var Message: TLMessage); override;
@@ -556,12 +557,15 @@ begin
         begin
           if GHighlightedIdx >= 0 then
           begin
+            // User navigated via arrows — pick the highlighted item.
             SendMessage(Combo, CB_SETCURSEL_, GHighlightedIdx, 0);
             GHighlightedIdx := -1;
+            SendMessage(Combo, CB_SHOWDROPDOWN_, 0, 0);
+            Exit(0);
           end;
-          SendMessage(Combo, CB_SHOWDROPDOWN_, 0, 0);
-          // Stay focused on the combobox after Enter — user can keep
-          // editing the picked task without an extra Tab.
+          // User typed text but didn't navigate the list — keep their text
+          // (don't let CB_SETCURSEL replace it) and start the task.
+          MainForm.CloseDropAndStart;
           Exit(0);
         end;
     end;
@@ -1277,6 +1281,26 @@ procedure TMainForm.DeferredFocusStart(Data: PtrInt);
 begin
   if btnStartStop.CanFocus then
     btnStartStop.SetFocus;
+end;
+
+procedure TMainForm.CloseDropAndStart;
+var
+  Typed: string;
+begin
+  // Enter without arrow-key navigation: just close the dropdown and keep
+  // the user's typed text. Do NOT trigger "Done" — that would clear the
+  // edit and finish the current task. The user can press the Done button
+  // (or arrow+Enter to pick an existing task) when they actually want to
+  // finish.
+  Typed := cbTask.Text;
+  FFiltering := True;
+  try
+    if cbTask.DroppedDown then cbTask.DroppedDown := False;
+    if cbTask.Text <> Typed then cbTask.Text := Typed;
+    cbTask.ItemIndex := -1;
+  finally
+    FFiltering := False;
+  end;
 end;
 
 procedure TMainForm.DeferredStartFromEnter(Data: PtrInt);
