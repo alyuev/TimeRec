@@ -3,7 +3,7 @@ object StatsForm: TStatsForm
   Top = 200
   Width = 720
   Height = 440
-  Caption = 'TimeRec - '#1057#1090#1072#1090#1080#1080#1089#1090#1080#1082#1072
+  Caption = 'TimeRec - '#1057#1090#1072#1090#1080#1089#1090#1080#1082#1072
   ClientHeight = 440
   ClientWidth = 720
   Position = poScreenCenter
@@ -161,6 +161,15 @@ object StatsForm: TStatsForm
       Caption = #1058#1077#1082#1089#1090#1086#1084
       TabOrder = 8
       OnClick = btnToggleViewClick
+    end
+    object chkRound5: TCheckBox
+      Left = 360
+      Top = 70
+      Width = 175
+      Height = 19
+      TabOrder = 10
+      Visible = False
+      OnChange = chkRound5Change
     end
     object btnCopy: TButton
       Left = 626

@@ -25,6 +25,7 @@ type
     btnToggleView: TButton;
     cbPeriod: TComboBox;
     chkKindExclude: TCheckBox;
+    chkRound5: TCheckBox;
     dtFrom: TDateEdit;
     dtTo: TDateEdit;
     lblFrom: TLabel;
@@ -44,6 +45,7 @@ type
     procedure btnToggleViewClick(Sender: TObject);
     procedure cbPeriodChange(Sender: TObject);
     procedure chkKindExcludeChange(Sender: TObject);
+    procedure chkRound5Change(Sender: TObject);
     procedure dtFromChange(Sender: TObject);
     procedure dtToChange(Sender: TObject);
     procedure FormShow(Sender: TObject);
@@ -117,6 +119,37 @@ begin
   if H = 0 then      Result := IntToStr(M) + 'мин'
   else if M = 0 then Result := IntToStr(H) + 'ч'
   else               Result := IntToStr(H) + 'ч' + IntToStr(M) + 'мин';
+end;
+
+function RoundUpToMinutes(MsTotal: Int64): Int64;
+// Минуты с округлением вверх (любая доля минуты → +1).
+begin
+  Result := MsTotal div 60000;
+  if (MsTotal mod 60000) > 0 then Inc(Result);
+end;
+
+function RoundUpTo5Min(MsTotal: Int64): Int64;
+// Минуты вверх до ближайших 5: 17→20, 12→15, 57→60.
+var Mins: Int64;
+begin
+  Mins := RoundUpToMinutes(MsTotal);
+  Result := ((Mins + 4) div 5) * 5;
+end;
+
+function FormatMinutes(Mins: Int64): string;
+var H, M: Int64;
+begin
+  if Mins <= 0 then Exit('0мин');
+  H := Mins div 60;
+  M := Mins mod 60;
+  if H = 0 then      Result := IntToStr(M) + 'мин'
+  else if M = 0 then Result := IntToStr(H) + 'ч'
+  else               Result := IntToStr(H) + 'ч' + IntToStr(M) + 'мин';
+end;
+
+function FormatHMinRound5(MsTotal: Int64): string;
+begin
+  Result := FormatMinutes(RoundUpTo5Min(MsTotal));
 end;
 
 function DayFile(const Dir: string; D: TDateTime): string;
@@ -430,6 +463,7 @@ begin
     lv.Visible := True;
     btnToggleView.Caption := 'Текстом';
     btnCopy.Visible := False;
+    chkRound5.Visible := False;
   end
   else
   begin
@@ -438,7 +472,14 @@ begin
     mmo.Visible := True;
     btnToggleView.Caption := 'Таблицей';
     btnCopy.Visible := True;
+    chkRound5.Caption := 'Округлять до 5 мин ↑';
+    chkRound5.Visible := True;
   end;
+end;
+
+procedure TStatsForm.chkRound5Change(Sender: TObject);
+begin
+  if mmo.Visible then FillMemo;
 end;
 
 procedure TStatsForm.btnCopyClick(Sender: TObject);
@@ -878,7 +919,26 @@ var
   i, MaxLen: Integer;
   S, DurS, PeriodStr: string;
   Lines: TStringList;
+  Round5: Boolean;
+  TotalRounded: Int64;
+
+  function RowMins(Ms: Int64): Int64;
+  begin
+    if Round5 then Result := RoundUpTo5Min(Ms)
+              else Result := RoundUpToMinutes(Ms);
+  end;
+
+  function Fmt(Ms: Int64): string;
+  begin
+    Result := FormatMinutes(RowMins(Ms));
+  end;
+
 begin
+  Round5 := chkRound5.Checked;
+  TotalRounded := 0;
+  for i := 0 to High(FRows) do
+    Inc(TotalRounded, RowMins(FRows[i].DurationMs));
+
   Lines := TStringList.Create;
   try
     if dtFrom.Date = dtTo.Date then
@@ -890,20 +950,20 @@ begin
     Lines.Add('Период: ' + PeriodStr);
     if FSelectedTasks.Count > 0 then
       Lines.Add('Задачи: ' + FSelectedTasks.CommaText);
-    Lines.Add('Итого:  ' + FormatHMin(FTotalMs)
+    Lines.Add('Итого:  ' + FormatMinutes(TotalRounded)
               + '  (' + FormatHHMMSS(FTotalMs) + ')');
     Lines.Add(StringOfChar('-', 60));
 
     MaxLen := 0;
     for i := 0 to High(FRows) do
     begin
-      DurS := FormatHMin(FRows[i].DurationMs);
+      DurS := Fmt(FRows[i].DurationMs);
       if Length(DurS) > MaxLen then MaxLen := Length(DurS);
     end;
 
     for i := 0 to High(FRows) do
     begin
-      DurS := FormatHMin(FRows[i].DurationMs);
+      DurS := Fmt(FRows[i].DurationMs);
       S := DurS + StringOfChar(' ', MaxLen - Length(DurS) + 2)
            + '— ' + FRows[i].Key;
       Lines.Add(S);
