@@ -4,6 +4,8 @@
 
 ![Windows](https://img.shields.io/badge/Windows-7%20%E2%80%93%2011-blue) ![Free Pascal](https://img.shields.io/badge/Free%20Pascal-3.2.2-orange) ![Lazarus](https://img.shields.io/badge/Lazarus-4.2-yellowgreen) ![License: MIT](https://img.shields.io/badge/License-MIT-green)
 
+![TimeRec в работе](docs/screenshot.png)
+
 ## Установка
 
 Скачать готовый билд из раздела [Releases](../../releases) → положить `TimeRec_v4.exe` в любую папку → запустить. Папки `data/` и `audio/` создаются рядом с EXE автоматически.
