@@ -40,6 +40,12 @@ type
     FOutSampleRate: Integer;
     FCachedFloorDb: Double;
     FLastFloorDb: Double;
+    FMicMuted: Boolean;
+    FSysMuted: Boolean;
+    FHasMicInput: Boolean;  // was mic stream created at Start time?
+    FHasSysInput: Boolean;  // was sys stream created at Start time?
+    FSilenceBuf: array of Byte;
+    procedure WriteSilenceTo(H: THandle; var Broken: Boolean; Bytes: Integer);
   public
     FVadSensitivity: Integer;  // -10..+10 dB bias added to calibrated threshold
     FVerbose: Boolean;         // verbose logging for debug
@@ -82,6 +88,14 @@ type
     function FFmpegAvailable: Boolean;
     function DetectFirstMic: string;
     procedure ListMics(AOut: TStrings);
+    // Hot-mute support: when set during recording, the source's samples
+    // are zeroed before being written to ffmpeg's pipe. Only effective
+    // when the source's input was created at Start time (HasMicInput /
+    // HasSysInput) — otherwise the caller must Stop+Start to add it.
+    procedure SetMicMuted(Value: Boolean);
+    procedure SetSysMuted(Value: Boolean);
+    function HasMicInput: Boolean;
+    function HasSysInput: Boolean;
   end;
 
   TStderrDrainThread = class(TThread)
@@ -253,6 +267,21 @@ begin
   inherited;
 end;
 
+procedure TAudioRecorder.WriteSilenceTo(H: THandle; var Broken: Boolean;
+  Bytes: Integer);
+var
+  Written: DWORD;
+begin
+  if Bytes <= 0 then Exit;
+  if Length(FSilenceBuf) < Bytes then
+  begin
+    SetLength(FSilenceBuf, Bytes);
+    FillChar(FSilenceBuf[0], Bytes, 0);
+  end;
+  if not WriteFile(H, FSilenceBuf[0], Bytes, Written, nil) then
+    Broken := True;
+end;
+
 procedure TAudioRecorder.OnLoopData(Data: Pointer; Bytes: Integer);
 var
   Written: DWORD;
@@ -262,7 +291,9 @@ begin
   FWriteLock.Enter;
   try
     if FPipeHandle = INVALID_HANDLE_VALUE then Exit;
-    if not WriteFile(FPipeHandle, Data^, Bytes, Written, nil) then
+    if FSysMuted then
+      WriteSilenceTo(FPipeHandle, FPipeBroken, Bytes)
+    else if not WriteFile(FPipeHandle, Data^, Bytes, Written, nil) then
       FPipeBroken := True;
   finally
     FWriteLock.Leave;
@@ -280,11 +311,35 @@ begin
   FWriteLock.Enter;
   try
     if FMicPipeHandle = INVALID_HANDLE_VALUE then Exit;
-    if not WriteFile(FMicPipeHandle, Data^, Bytes, Written, nil) then
+    if FMicMuted then
+      WriteSilenceTo(FMicPipeHandle, FMicPipeBroken, Bytes)
+    else if not WriteFile(FMicPipeHandle, Data^, Bytes, Written, nil) then
       FMicPipeBroken := True;
   finally
     FWriteLock.Leave;
   end;
+end;
+
+procedure TAudioRecorder.SetMicMuted(Value: Boolean);
+begin
+  FMicMuted := Value;
+  AppendLog('SetMicMuted ' + BoolToStr(Value, True));
+end;
+
+procedure TAudioRecorder.SetSysMuted(Value: Boolean);
+begin
+  FSysMuted := Value;
+  AppendLog('SetSysMuted ' + BoolToStr(Value, True));
+end;
+
+function TAudioRecorder.HasMicInput: Boolean;
+begin
+  Result := FHasMicInput;
+end;
+
+function TAudioRecorder.HasSysInput: Boolean;
+begin
+  Result := FHasSysInput;
 end;
 
 
@@ -731,10 +786,24 @@ begin
   Result := False;
   if IsRecording then Exit;
   if not (Mic or Sys) then Exit;
+  // v4: open BOTH sources whenever possible so the user can hot-toggle
+  // (mute/unmute) mid-recording without restarting ffmpeg. If only one
+  // is currently "on", the other starts muted — its samples are zeroed
+  // until the user enables it.
+  FMicMuted := not Mic;
+  FSysMuted := not Sys;
 
   FOutputFile := OutFile;
   ForceDirectories(ExtractFilePath(OutFile));
   FPipeBroken := False;
+  FMicPipeBroken := False;
+  FHasMicInput := False;
+  FHasSysInput := False;
+  // Initial mute follows the requested-source flags. If both are
+  // requested, neither is muted at start. Clicking M/S during recording
+  // flips these flags (see SetMicMuted/SetSysMuted).
+  FMicMuted := False;
+  FSysMuted := False;
 
   Bitrate := QualityBitrate[Quality];
   ActualMic := MicDevice;
@@ -754,19 +823,32 @@ begin
   // pipe, the WASAPI thread stalls, and Windows drops the initial
   // packets, producing a ragged opening few seconds in the recording.
   TimePoint('enter');
-  if Sys then
+  // Try to open BOTH inputs unconditionally so user can hot-toggle.
+  // If sys-loopback fails (very rare — default render endpoint always
+  // exists), fall through with sys disabled.
+  if CreateLoopbackPipe then
   begin
-    if not CreateLoopbackPipe then Exit;
     TimePoint('sys pipe created');
     FLoop := TWasapiLoopback.Create;
     FLoop.OnData := nil;
-    if not FLoop.Start then
+    if FLoop.Start then
     begin
+      FHasSysInput := True;
+      TimePoint('sys WASAPI loopback started');
+    end
+    else
+    begin
+      AppendLog('Sys WASAPI loopback failed: ' + FLoop.StartError);
       FreeAndNil(FLoop);
       ClosePipe;
-      Exit;
     end;
-    TimePoint('sys WASAPI loopback started');
+  end;
+  if not FHasSysInput then
+  begin
+    // If sys wasn't user-requested AND we couldn't open it, that's fine.
+    // If it WAS requested and we failed, sys side is just unavailable.
+    if Sys then AppendLog('Sys requested but unavailable; continuing without it');
+    FSysMuted := True;
   end;
 
   FProcess := TProcess.Create(nil);
@@ -788,7 +870,7 @@ begin
 
   // System audio rides on a named pipe so stdin stays free for ffmpeg's
   // 'q' control character — that's how we shut it down cleanly.
-  if Sys then
+  if FHasSysInput then
   begin
     if FLoop.IsFloat and (FLoop.BitsPerSample = 32) then SysFmt := 'f32le'
     else if FLoop.BitsPerSample = 16 then SysFmt := 's16le'
@@ -806,28 +888,30 @@ begin
     SysIdx := InputCount;
     Inc(InputCount);
   end;
-  if Mic then
+  // Try mic input always — WASAPI first (hot-mute capable). If WASAPI
+  // mic isn't available AND the user requested mic at start time, fall
+  // back to dshow (no hot-mute on that path, but recording works).
+  FMic := nil;
+  if CreateMicPipe then
   begin
-    // Try WASAPI mic capture first — it initialises in ~50ms vs the
-    // 500–1500ms that dshow takes (especially bluetooth). Falls back
-    // to dshow if the device isn't found via the MMDevice enumerator.
-    FMic := nil;
-    if CreateMicPipe then
+    TimePoint('mic pipe created');
+    FMic := TWasapiLoopback.Create;
+    FMic.OnData := nil;
+    if not FMic.StartCapture(MicDevice) then
     begin
-      TimePoint('mic pipe created');
-      FMic := TWasapiLoopback.Create;
-      FMic.OnData := nil;
-      if not FMic.StartCapture(MicDevice) then
-      begin
-        AppendLog('WASAPI mic not available (' + FMic.StartError +
-          '), falling back to dshow');
-        FreeAndNil(FMic);
-        CloseMicPipe;
-      end
-      else
-        TimePoint('mic WASAPI capture started');
+      AppendLog('WASAPI mic not available (' + FMic.StartError + ')');
+      FreeAndNil(FMic);
+      CloseMicPipe;
+    end
+    else
+    begin
+      FHasMicInput := True;
+      TimePoint('mic WASAPI capture started');
     end;
-    if FMic <> nil then
+  end;
+  if FHasMicInput or Mic then
+  begin
+    if FHasMicInput then
     begin
       AppendLog(Format('WASAPI mic capture: %d Hz %d ch %d-bit float=%s',
         [FMic.SampleRate, FMic.Channels, FMic.BitsPerSample,
@@ -872,9 +956,12 @@ begin
   // WASAPI loopback produces pure zeros during silence, so quiet
   // musical passages need a lower threshold to survive (-32 dB cut
   // typical music dialogue/quiet sections).
+  // VAD threshold: if user started with sys-only (mic muted), be more
+  // permissive — sys silence is pure zeros. Otherwise use the mic-tuned
+  // default and let calibration narrow it further below.
   if Sys and not Mic then ThresholdDb := -55
   else                    ThresholdDb := -32;
-  if AutoPauseOnSilence and Mic then
+  if AutoPauseOnSilence and FHasMicInput then
   begin
     if FCachedFloorDb > -300 then
     begin

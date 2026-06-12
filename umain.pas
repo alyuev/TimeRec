@@ -1876,9 +1876,16 @@ begin
   SaveConfig;
   if FAudioRecorder.IsRecording then
   begin
-    // Toggling sources while recording: restart with new flags.
-    StopRecording;
-    StartRecording;
+    if FAudioRecorder.HasMicInput then
+      // Hot-mute: flip the flag, no ffmpeg restart, file stays one piece.
+      FAudioRecorder.SetMicMuted(not btnMic.Down)
+    else
+    begin
+      // No live mic stream (dshow fallback or mic device unavailable
+      // at Start) — old behaviour: restart with new flags.
+      StopRecording;
+      StartRecording;
+    end;
   end;
 end;
 
@@ -1888,8 +1895,13 @@ begin
   SaveConfig;
   if FAudioRecorder.IsRecording then
   begin
-    StopRecording;
-    StartRecording;
+    if FAudioRecorder.HasSysInput then
+      FAudioRecorder.SetSysMuted(not btnSys.Down)
+    else
+    begin
+      StopRecording;
+      StartRecording;
+    end;
   end;
 end;
 
