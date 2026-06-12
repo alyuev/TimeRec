@@ -6,7 +6,8 @@ interface
 
 uses
   Classes, SysUtils, Forms, Controls, Grids, Graphics, LCLType, LMessages,
-  Menus, Dialogs, Windows, ShellApi, laz2_XMLRead, laz2_XMLWrite, laz2_DOM;
+  Menus, Dialogs, Windows, ShellApi, Clipbrd, laz2_XMLRead, laz2_XMLWrite,
+  laz2_DOM;
 
 type
   TRefRewriter = function(const OldName, NewName: string): Integer of object;
@@ -32,6 +33,8 @@ type
     procedure GridKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
     procedure FormCloseQueryEv(Sender: TObject; var CanClose: Boolean);
     procedure MenuDeleteClick(Sender: TObject);
+    procedure MenuCopyPathClick(Sender: TObject);
+    procedure MenuOpenFolderClick(Sender: TObject);
     procedure AddPopupItem(const ACaption: string; AHandler: TNotifyEvent);
     function RewriteRefs(const OldName, NewName: string): Integer;
     function RemoveRefs(const AName: string): Integer;
@@ -100,6 +103,9 @@ begin
   FGrid.OnHeaderClick := @GridHeaderClick;
 
   FPopup := TPopupMenu.Create(Self);
+  AddPopupItem('Копировать путь к файлу', @MenuCopyPathClick);
+  AddPopupItem('Открыть папку с файлом', @MenuOpenFolderClick);
+  AddPopupItem('-', nil);
   AddPopupItem('Удалить файл...', @MenuDeleteClick);
   FGrid.PopupMenu := FPopup;
 end;
@@ -110,7 +116,7 @@ var
 begin
   Mi := TMenuItem.Create(FPopup);
   Mi.Caption := ACaption;
-  Mi.OnClick := AHandler;
+  if Assigned(AHandler) then Mi.OnClick := AHandler;
   FPopup.Items.Add(Mi);
 end;
 
@@ -571,6 +577,31 @@ begin
   UpdCount := RewriteRefs(OldName, FinalName);
   Caption := Format('Записи аудио — переименовано, ссылок обновлено: %d', [UpdCount]);
   RefreshList;
+end;
+
+procedure TAudioListForm.MenuCopyPathClick(Sender: TObject);
+var
+  Row: Integer;
+  Path: string;
+begin
+  Row := FGrid.Row;
+  if (Row < 1) or (Row >= FOriginalNames.Count) then Exit;
+  Path := FAudioDir + FOriginalNames[Row];
+  Clipboard.AsText := Path;
+end;
+
+procedure TAudioListForm.MenuOpenFolderClick(Sender: TObject);
+var
+  Row: Integer;
+  Path: UnicodeString;
+  Params: UnicodeString;
+begin
+  Row := FGrid.Row;
+  if (Row < 1) or (Row >= FOriginalNames.Count) then Exit;
+  Path := UnicodeString(FAudioDir + FOriginalNames[Row]);
+  // explorer /select,"path" opens the folder and highlights the file.
+  Params := '/select,"' + Path + '"';
+  ShellExecuteW(0, nil, 'explorer.exe', PWideChar(Params), nil, 1);
 end;
 
 procedure TAudioListForm.MenuDeleteClick(Sender: TObject);
