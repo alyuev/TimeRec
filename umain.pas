@@ -2246,7 +2246,7 @@ begin
     end;
     ForceDirectories(ResolvedAudioDir);
     Path := ResolvedAudioDir + PathDelim +
-            FormatDateTime('yyyymmdd_hhnnss', Now) + '.mp3';
+            'TimeRec_' + FormatDateTime('yyyymmdd_hhnnss', Now) + '.mp3';
     DbgLog('  path=' + Path + ' mic=' + BoolToStr(btnMic.Down, True)
          + ' sys=' + BoolToStr(btnSys.Down, True));
     if FMicDevice = '' then
