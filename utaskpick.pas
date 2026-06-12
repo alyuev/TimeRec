@@ -9,11 +9,13 @@ uses
 
 type
   TTaskPickForm = class(TForm)
+    btnAll: TButton;
     btnCancel: TButton;
     btnOK: TButton;
     btnReset: TButton;
     edSearch: TEdit;
     lst: TCheckListBox;
+    procedure btnAllClick(Sender: TObject);
     procedure btnResetClick(Sender: TObject);
     procedure edSearchChange(Sender: TObject);
     procedure FormShow(Sender: TObject);
@@ -128,6 +130,11 @@ end;
 
 procedure TTaskPickForm.FormShow(Sender: TObject);
 begin
+  Caption := 'Выбор задач';
+  edSearch.TextHint := 'Поиск (от 3 символов)...';
+  btnAll.Hint := 'Отметить все';
+  btnReset.Hint := 'Снять все';
+  btnCancel.Caption := 'Отмена';
   edSearch.Text := '';
   RebuildList('');
 end;
@@ -141,6 +148,21 @@ end;
 procedure TTaskPickForm.lstClickCheck(Sender: TObject);
 begin
   SyncFromUI;
+end;
+
+procedure TTaskPickForm.btnAllClick(Sender: TObject);
+var
+  i, idx: Integer;
+begin
+  // Отмечаем всё, что сейчас видно в списке (с учётом фильтра поиска).
+  // Если фильтр пустой — отмечает абсолютно всё.
+  for i := 0 to lst.Items.Count - 1 do
+  begin
+    idx := PtrInt(lst.Items.Objects[i]);
+    if (idx >= 0) and (idx <= High(FChecked)) then
+      FChecked[idx] := True;
+  end;
+  RebuildList(edSearch.Text);
 end;
 
 procedure TTaskPickForm.btnResetClick(Sender: TObject);

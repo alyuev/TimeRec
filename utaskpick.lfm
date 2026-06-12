@@ -4,7 +4,6 @@ object TaskPickForm: TTaskPickForm
   Width = 360
   Height = 460
   BorderStyle = bsSizeable
-  Caption = #1042#1099#1073#1086#1088' '#1079#1072#1076#1072#1095
   ClientHeight = 460
   ClientWidth = 360
   Position = poDesigned
@@ -16,7 +15,6 @@ object TaskPickForm: TTaskPickForm
     Width = 344
     Height = 23
     TabOrder = 0
-    TextHint = #1055#1086#1080#1089#1082' ('#1086#1090' 3 '#1089#1080#1084#1074#1086#1083#1086#1074')...'
     OnChange = edSearchChange
   end
   object lst: TCheckListBox
@@ -29,14 +27,30 @@ object TaskPickForm: TTaskPickForm
     TabOrder = 1
     OnClickCheck = lstClickCheck
   end
-  object btnReset: TButton
+  object btnAll: TButton
     Left = 8
     Top = 424
-    Width = 100
+    Width = 36
     Height = 28
     Anchors = [akLeft, akBottom]
-    Caption = #1057#1073#1088#1086#1089#1080#1090#1100
+    Caption = #9745
+    Font.Height = -17
+    ParentFont = False
+    ShowHint = True
     TabOrder = 2
+    OnClick = btnAllClick
+  end
+  object btnReset: TButton
+    Left = 48
+    Top = 424
+    Width = 36
+    Height = 28
+    Anchors = [akLeft, akBottom]
+    Caption = #9744
+    Font.Height = -17
+    ParentFont = False
+    ShowHint = True
+    TabOrder = 3
     OnClick = btnResetClick
   end
   object btnOK: TButton
@@ -48,7 +62,7 @@ object TaskPickForm: TTaskPickForm
     Caption = 'OK'
     Default = True
     ModalResult = 1
-    TabOrder = 3
+    TabOrder = 4
   end
   object btnCancel: TButton
     Left = 264
@@ -57,8 +71,7 @@ object TaskPickForm: TTaskPickForm
     Height = 28
     Anchors = [akRight, akBottom]
     Cancel = True
-    Caption = #1054#1090#1084#1077#1085#1072
     ModalResult = 2
-    TabOrder = 4
+    TabOrder = 5
   end
 end
