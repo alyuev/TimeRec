@@ -1047,6 +1047,19 @@ begin
   FProcess.Parameters.Add('-map'); FProcess.Parameters.Add('[mixclean]');
   FProcess.Parameters.Add('-b:a');
   FProcess.Parameters.Add(IntToStr(Bitrate) + 'k');
+  // Force CBR so MCI (used in the transcript viewer for playback +
+  // seek) gets sample-accurate positions. Without this LAME picks
+  // ABR/VBR with the bitrate as a hint, and seeks drift several
+  // seconds on long files. -write_xing 0 drops the Xing header that
+  // MCI's mpegvideo driver sometimes misreads for seeking.
+  FProcess.Parameters.Add('-minrate');
+  FProcess.Parameters.Add(IntToStr(Bitrate) + 'k');
+  FProcess.Parameters.Add('-maxrate');
+  FProcess.Parameters.Add(IntToStr(Bitrate) + 'k');
+  FProcess.Parameters.Add('-bufsize');
+  FProcess.Parameters.Add(IntToStr(Bitrate) + 'k');
+  FProcess.Parameters.Add('-write_xing');
+  FProcess.Parameters.Add('0');
   // Resample / downmix on the encoder side. Defaults are voice-oriented:
   // 16 kHz mono — adequate for speech, dramatically smaller files.
   FProcess.Parameters.Add('-ar'); FProcess.Parameters.Add(IntToStr(OutSampleRate));

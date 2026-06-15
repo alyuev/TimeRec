@@ -8,3 +8,4 @@ backup/
 .claude/settings.local.json
 dbg.log
 ffmpeg.exe
+whisper-vulkan-bin-x64.zip

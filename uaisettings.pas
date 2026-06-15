@@ -47,6 +47,7 @@ type
     edLang, edDllUrl, edModelUrl: TEdit;
     cbModel: TComboBox;
     chkEnabled: TCheckBox;
+    chkTimestamps: TCheckBox;
     lblStatus: TLabel;
     lblProgress: TLabel;
     pb: TProgressBar;
@@ -332,7 +333,11 @@ var
   Idx: Integer;
   FName, Url, Dest: string;
 begin
-  if FBusy then Exit;
+  if FBusy then
+  begin
+    ShowMessage('Уже идёт скачивание, дождитесь завершения.');
+    Exit;
+  end;
   Idx := cbModel.ItemIndex;
   if (Idx < 0) or (Idx > High(KnownModels)) then
   begin
@@ -340,9 +345,15 @@ begin
     Exit;
   end;
   FName := KnownModels[Idx].FileName;
+  Dest := IncludeTrailingPathDelimiter(FAppDir) + 'models' + PathDelim + FName;
+  if FileExists(Dest) then
+  begin
+    lblProgress.Caption := 'Модель ' + FName + ' уже скачана.';
+    ShowMessage('Модель «' + FName + '» уже скачана:' + LineEnding + Dest);
+    Exit;
+  end;
   Url := IncludeTrailingPathDelimiter(StringReplace(edModelUrl.Text, '\', '/',
          [rfReplaceAll])) + FName;
-  Dest := IncludeTrailingPathDelimiter(FAppDir) + 'models' + PathDelim + FName;
   FBusy := True;
   btnCPU.Enabled := False;
   btnBLAS.Enabled := False;
@@ -350,7 +361,8 @@ begin
   btnDownloadModel.Enabled := False;
   pb.Position := 0;
   lblProgress.Caption := 'Скачиваю модель ' + FName + '...';
-  StartModelDownload(FName);
+  lblProgress.Update;
+  Application.ProcessMessages;
   TModelDownloadThread.Create(Self, FName, Url, Dest);
 end;
 
@@ -379,8 +391,24 @@ begin
 end;
 
 procedure TWhisperSettingsForm.DoModelChange(Sender: TObject);
+var
+  Idx: Integer;
+  Path: string;
 begin
-  // Could refresh "installed" indicator per model. Skipped for v1.
+  Idx := cbModel.ItemIndex;
+  if (Idx < 0) or (Idx > High(KnownModels)) then Exit;
+  Path := IncludeTrailingPathDelimiter(FAppDir) + 'models' + PathDelim +
+          KnownModels[Idx].FileName;
+  if FileExists(Path) then
+  begin
+    btnDownloadModel.Caption := 'Уже скачана ✓';
+    btnDownloadModel.Enabled := False;
+  end
+  else
+  begin
+    btnDownloadModel.Caption := 'Скачать выбранную';
+    btnDownloadModel.Enabled := not FBusy;
+  end;
 end;
 
 function EditWhisperSettings(var S: TWhisperSettings;
@@ -474,6 +502,7 @@ begin
     F.btnDownloadModel.SetBounds(430, 174, 190, 28);
     F.btnDownloadModel.Caption := 'Скачать выбранную';
     F.btnDownloadModel.OnClick := @F.DoModelDownload;
+    F.DoModelChange(nil);
 
     lbl3 := TLabel.Create(F);
     lbl3.Parent := F;
@@ -494,7 +523,7 @@ begin
     lbl4 := TLabel.Create(F);
     lbl4.Parent := F;
     lbl4.SetBounds(12, 290, 616, 18);
-    lbl4.Caption := '4. Язык';
+    lbl4.Caption := '4. Язык и опции';
     lbl4.Font.Style := [fsBold];
 
     lblLang := TLabel.Create(F);
@@ -507,6 +536,12 @@ begin
     F.edLang.SetBounds(96, 308, 80, 24);
     F.edLang.TextHint := 'авто / ru / en';
     F.edLang.Text := S.Language;
+
+    F.chkTimestamps := TCheckBox.Create(F);
+    F.chkTimestamps.Parent := F;
+    F.chkTimestamps.SetBounds(190, 310, 440, 20);
+    F.chkTimestamps.Caption := 'Показывать временные метки сегментов';
+    F.chkTimestamps.Checked := S.ShowTimestamps;
 
     lblAdv := TLabel.Create(F);
     lblAdv.Parent := F;
@@ -548,6 +583,7 @@ begin
         S.ModelFile := KnownModels[F.cbModel.ItemIndex].FileName;
       S.Language := Trim(F.edLang.Text);
       S.Enabled := True;  // always-on now; presence-of-engine gates the UI
+      S.ShowTimestamps := F.chkTimestamps.Checked;
       S.DllBaseUrl := Trim(F.edDllUrl.Text);
       S.ModelBaseUrl := Trim(F.edModelUrl.Text);
       Result := True;

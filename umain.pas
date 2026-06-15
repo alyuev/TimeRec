@@ -108,6 +108,8 @@ type
     procedure btnAudioListClick(Sender: TObject);
     procedure btnPlayClick(Sender: TObject);
     procedure btnAIClick(Sender: TObject);
+    procedure btnAIMouseDown(Sender: TObject; Button: TMouseButton;
+      Shift: TShiftState; X, Y: Integer);
     procedure miAISettingsClick(Sender: TObject);
     procedure AudioListHidden(Sender: TObject);
     procedure btnMicDropClick(Sender: TObject);
@@ -154,6 +156,9 @@ type
     FAISettings: TWhisperSettings;
     FAIBusy: Boolean;
     FAITargetPath: string;
+    FAITranscribeStart: QWord;
+    FAIClockPhase: Integer;
+    FAICtrlPressed: Boolean;
     FMicFloorCache: TStringList;  // "MicDevice=FloorDb" pairs
     FLastAudioFileSize: Int64;
     FAudioUnchangedTicks: Integer;
@@ -174,6 +179,7 @@ type
     procedure StopRecording;
     procedure AudioListAIRequest(const AudioPath: string);
     procedure RefreshAIButton;
+    procedure UpdateAIAnimation;
     procedure UpdateAIButtonForFile(const Path: string);
     procedure DoAITranscribeDone(R: TWhisperResult);
     procedure LoadAISettings;
@@ -382,8 +388,17 @@ begin
   btnPlay.Hint := 'Проиграть последнюю запись';
   btnAudioList.Hint := 'Список аудио записей';
   btnAI.ShowHint := True;
+  btnAI.Font.Name := 'Segoe UI Emoji';
+  btnAI.Font.Height := -15;
+  btnAI.OnMouseDown := @btnAIMouseDown;
+  lblAudio.AutoSize := False;
+  lblAudio.Alignment := taLeftJustify;
   miAISettings.Caption := 'Расшифровка аудио (Whisper)...';
+  uwhisper.SetLogPath(AppDir + 'whisper.log');
+  uwhisper.WhisperLog('--- TimeRec started ---');
   LoadAISettings;
+  uaitext.SetDefaultShowTimes(FAISettings.ShowTimestamps);
+  uaitext.SetFFmpegPath(FAudioRecorder.GetFFmpegPath);
   RefreshAIButton;
 
   btnSettings.ShowHint := True;
@@ -480,7 +495,8 @@ begin
   btnVAD.SetBounds       (Round(80 * S),  Round(56 * S), Round(28 * S),  Round(22 * S));
   btnRec.SetBounds       (Round(112 * S), Round(56 * S), Round(68 * S),  Round(22 * S));
   btnPlay.SetBounds      (Round(182 * S), Round(56 * S), Round(24 * S),  Round(22 * S));
-  lblAudio.SetBounds     (Round(210 * S), Round(60 * S), Round(80 * S),  Round(14 * S));
+  btnAI.SetBounds        (Round(206 * S), Round(56 * S), Round(24 * S),  Round(22 * S));
+  lblAudio.SetBounds     (Round(234 * S), Round(60 * S), Round(56 * S),  Round(14 * S));
   btnAudioList.SetBounds (Round(292 * S), Round(56 * S), Round(24 * S),  Round(22 * S));
   lblAudio.Font.Height := NewFont;
   Application.QueueAsyncCall(@DeselectCombo, 0);
@@ -493,8 +509,27 @@ begin
   pbSlider.Invalidate;
   RefreshTodayTotal;
   UpdateAudioStatus;
+  if FAIBusy then UpdateAIAnimation;
   if (Now - FLastAlive) * 86400 > 10 then
     UpdateCurrentMarker;
+end;
+
+procedure TMainForm.UpdateAIAnimation;
+// Cycles 🕐..🕛 (U+1F550..U+1F55B) on the AI button and writes the
+// elapsed time into lblAudio so the user sees progress.
+var
+  Sec: Int64;
+  Glyph: string;
+  TimeStr: string;
+begin
+  FAIClockPhase := (FAIClockPhase + 1) mod 12;
+  // UTF-8 for U+1F550 + phase: F0 9F 95 (90..9B)
+  Glyph := #$F0#$9F#$95 + Chr($90 + FAIClockPhase);
+  btnAI.Caption := Glyph;
+  Sec := (GetTickCount64 - FAITranscribeStart) div 1000;
+  TimeStr := Format('%.2d:%.2d', [Sec div 60, Sec mod 60]);
+  lblAudio.Caption := TimeStr;
+  btnAI.Hint := 'Расшифровка идёт... ' + TimeStr;
 end;
 
 { -------- borderless resize support via subclassing -------- }
@@ -2037,8 +2072,9 @@ begin
   if FAIBusy then
   begin
     btnAI.Visible := True;
-    btnAI.Caption := '...';
-    btnAI.Hint := 'Расшифровка выполняется...';
+    // Initial clock-face glyph (🕐 U+1F550). Timer1 advances it.
+    btnAI.Caption := #$F0#$9F#$95#$90;
+    btnAI.Hint := 'Расшифровка идёт...';
     Exit;
   end;
   if (Path = '') or (not FileExists(Path)) then
@@ -2051,7 +2087,7 @@ begin
   begin
     btnAI.Visible := True;
     btnAI.Caption := 'Aa';
-    btnAI.Hint := 'Показать расшифровку';
+    btnAI.Hint := 'Показать расшифровку (Ctrl+клик — перерасшифровать)';
   end
   else if WhisperReady(FAISettings) then
   begin
@@ -2068,26 +2104,31 @@ begin
   UpdateAIButtonForFile(FindNewestMp3(ResolvedAudioDir));
 end;
 
+procedure TMainForm.btnAIMouseDown(Sender: TObject; Button: TMouseButton;
+  Shift: TShiftState; X, Y: Integer);
+begin
+  FAICtrlPressed := ssCtrl in Shift;
+end;
+
 procedure TMainForm.btnAIClick(Sender: TObject);
 var
-  Path, TxtPath, Body: string;
-  L: TStringList;
+  Path, TxtPath: string;
+  ForceRedo: Boolean;
 begin
+  // Read Ctrl state directly — OnMouseDown flag isn't always reliable
+  // (e.g. when click is fired via SpaceBar or keyboard activation).
+  ForceRedo := FAICtrlPressed or ((GetKeyState(VK_CONTROL) and $8000) <> 0);
+  FAICtrlPressed := False;
   Path := FindNewestMp3(ResolvedAudioDir);
   if Path = '' then begin ShowMessage('Нет записей.'); Exit; end;
   TxtPath := TranscriptPath(Path);
-  if FileExists(TxtPath) then
+  if FileExists(TxtPath) and not ForceRedo then
   begin
-    L := TStringList.Create;
-    try
-      L.LoadFromFile(TxtPath);
-      Body := L.Text;
-    finally
-      L.Free;
-    end;
-    ShowTranscript('Расшифровка ' + ExtractFileName(Path), Body);
+    ShowTranscriptFile(TxtPath);
     Exit;
   end;
+  if ForceRedo and FileExists(TxtPath) then
+    SysUtils.DeleteFile(TxtPath);
   if not WhisperReady(FAISettings) then
   begin
     ShowMessage('Whisper не готов: нужны движок и модель — настрой их в меню.');
@@ -2095,6 +2136,8 @@ begin
   end;
   FAIBusy := True;
   FAITargetPath := Path;
+  FAITranscribeStart := GetTickCount64;
+  FAIClockPhase := 0;
   RefreshAIButton;
   TWhisperThread.Create(FAISettings, Path, FAudioRecorder.GetFFmpegPath,
     @DoAITranscribeDone);
@@ -2122,10 +2165,10 @@ begin
       L.Free;
     end;
   end;
-  FAITargetPath := '';
   RefreshAIButton;
   if FAudioListForm <> nil then FAudioListForm.RefreshList;
-  ShowTranscript('Расшифровка', R.Text);
+  if FAITargetPath <> '' then ShowTranscriptFile(TranscriptPath(FAITargetPath));
+  FAITargetPath := '';
 end;
 
 procedure TMainForm.AudioListAIRequest(const AudioPath: string);
@@ -2143,6 +2186,8 @@ begin
   end;
   FAIBusy := True;
   FAITargetPath := AudioPath;
+  FAITranscribeStart := GetTickCount64;
+  FAIClockPhase := 0;
   RefreshAIButton;
   TWhisperThread.Create(FAISettings, AudioPath,
     FAudioRecorder.GetFFmpegPath, @DoAITranscribeDone);
@@ -2153,6 +2198,7 @@ begin
   if EditWhisperSettings(FAISettings, AppDir) then
   begin
     SaveAISettings;
+    uaitext.SetDefaultShowTimes(FAISettings.ShowTimestamps);
     RefreshAIButton;
   end;
 end;
@@ -2178,6 +2224,7 @@ begin
       FAISettings.ModelFile := Cfg.Values['model'];
     FAISettings.Language := Cfg.Values['language'];
     FAISettings.Enabled := SameText(Cfg.Values['enabled'], 'true');
+    FAISettings.ShowTimestamps := SameText(Cfg.Values['timestamps'], 'true');
     FAISettings.DllBaseUrl := Cfg.Values['dllurl'];
     FAISettings.ModelBaseUrl := Cfg.Values['modelurl'];
   finally
@@ -2197,6 +2244,10 @@ begin
       Cfg.Values['enabled'] := 'true'
     else
       Cfg.Values['enabled'] := 'false';
+    if FAISettings.ShowTimestamps then
+      Cfg.Values['timestamps'] := 'true'
+    else
+      Cfg.Values['timestamps'] := 'false';
     Cfg.Values['dllurl'] := FAISettings.DllBaseUrl;
     Cfg.Values['modelurl'] := FAISettings.ModelBaseUrl;
     Cfg.SaveToFile(AppDir + 'whisper.cfg');
@@ -2545,6 +2596,7 @@ begin
       FRecStartTickMs := GetTickCount64;
       btnRec.Font.Color := clRed;
       btnRec.Font.Style := [fsBold];
+      btnRec.Font.Height := -10;  // squeeze ● REC + MM:SS into 68px
       btnRec.Caption := #$E2#$97#$8F + ' REC';
       btnRec.Invalidate;
       UpdateAudioStatus;
@@ -2594,6 +2646,7 @@ begin
     DbgLog('  Stop returned, resetting visuals');
     btnRec.Font.Color := clWindowText;
     btnRec.Font.Style := [];
+    btnRec.Font.Height := -11;
     btnRec.Caption := #$E2#$97#$8F + ' REC';
     btnRec.Invalidate;
     UpdateAudioStatus;
@@ -2616,26 +2669,30 @@ begin
 end;
 
 procedure TMainForm.UpdateAudioStatus;
+// While recording, the elapsed time is shown as a second line on the
+// REC button itself (the first line stays «● REC» in red). The
+// lblAudio caption is reserved for the AI-transcription animation now.
 var
-  S: string;
   Sec: Integer;
+  TimeStr: string;
 begin
   if FAudioRecorder.IsRecording then
   begin
     Sec := FAudioRecorder.ElapsedSec;
     if Sec >= 3600 then
-      S := Format('запись %d:%.2d:%.2d',
+      TimeStr := Format('%d:%.2d:%.2d',
         [Sec div 3600, (Sec div 60) mod 60, Sec mod 60])
     else
-      S := Format('запись %.2d:%.2d', [Sec div 60, Sec mod 60]);
+      TimeStr := Format('%.2d:%.2d', [Sec div 60, Sec mod 60]);
     if FAudioFilesForSegment.Count > 1 then
-      S := S + Format(' (#%d)', [FAudioFilesForSegment.Count]);
+      TimeStr := TimeStr + Format(' (#%d)', [FAudioFilesForSegment.Count]);
+    btnRec.Caption := #$E2#$97#$8F + ' REC ' + TimeStr;
   end
   else
   begin
-    S := '';
+    btnRec.Caption := #$E2#$97#$8F + ' REC';
   end;
-  lblAudio.Caption := S;
+  if not FAIBusy then lblAudio.Caption := '';
 end;
 
 function TMainForm.ResolvedLazyCureDir: string;

@@ -531,11 +531,14 @@ begin
   if (Col = 6) and (Row >= 1) and (Row < FGrid.RowCount) then
   begin
     Path := FAudioDir + FGrid.Cells[1, Row];
-    if FileExists(ChangeFileExt(Path, '.txt')) then
+    if FileExists(ChangeFileExt(Path, '.txt')) and not (ssCtrl in Shift) then
     begin
       ShowTranscriptFile(ChangeFileExt(Path, '.txt'));
       Exit;
     end;
+    // Ctrl+click on an existing transcript forces re-transcription.
+    if (ssCtrl in Shift) and FileExists(ChangeFileExt(Path, '.txt')) then
+      SysUtils.DeleteFile(ChangeFileExt(Path, '.txt'));
     if FAIEnabled and Assigned(FOnAIRequest) then
       FOnAIRequest(Path);
   end;
