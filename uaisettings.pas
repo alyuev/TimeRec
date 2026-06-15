@@ -40,7 +40,7 @@ const
   DefaultModelBaseUrl = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/';
 
 type
-  TDownloadKind = (dkBackendCPU, dkBackendVulkan, dkBackendCUDA, dkModel);
+  TDownloadKind = (dkBackendCPU, dkBackendBLAS, dkBackendCUDA, dkModel);
 
   TWhisperSettingsForm = class(TForm)
   public
@@ -50,11 +50,11 @@ type
     lblStatus: TLabel;
     lblProgress: TLabel;
     pb: TProgressBar;
-    btnCPU, btnVulkan, btnCUDA, btnDownloadModel: TButton;
+    btnCPU, btnBLAS, btnCUDA, btnDownloadModel: TButton;
     FAppDir: string;
     FBusy: Boolean;
     procedure DoBackendCPU(Sender: TObject);
-    procedure DoBackendVulkan(Sender: TObject);
+    procedure DoBackendBLAS(Sender: TObject);
     procedure DoBackendCUDA(Sender: TObject);
     procedure DoModelDownload(Sender: TObject);
     procedure DoModelChange(Sender: TObject);
@@ -262,15 +262,15 @@ begin
     Exit;
   end;
   case Kind of
-    dkBackendCPU:    Wildcard := 'whisper-bin-x64.zip';
-    dkBackendVulkan: Wildcard := 'whisper-vulkan-bin-x64.zip';
-    dkBackendCUDA:   Wildcard := 'whisper-cublas-*-bin-x64.zip';
+    dkBackendCPU:  Wildcard := 'whisper-bin-x64.zip';
+    dkBackendBLAS: Wildcard := 'whisper-blas-bin-x64.zip';
+    dkBackendCUDA: Wildcard := 'whisper-cublas-*-bin-x64.zip';
   end;
   BackendDir := IncludeTrailingPathDelimiter(FAppDir) + 'whisper';
   ForceDirectories(BackendDir);
   FBusy := True;
   btnCPU.Enabled := False;
-  btnVulkan.Enabled := False;
+  btnBLAS.Enabled := False;
   btnCUDA.Enabled := False;
   btnDownloadModel.Enabled := False;
   pb.Position := 0;
@@ -286,9 +286,9 @@ begin
   StartBackendDownload(dkBackendCPU);
 end;
 
-procedure TWhisperSettingsForm.DoBackendVulkan(Sender: TObject);
+procedure TWhisperSettingsForm.DoBackendBLAS(Sender: TObject);
 begin
-  StartBackendDownload(dkBackendVulkan);
+  StartBackendDownload(dkBackendBLAS);
 end;
 
 procedure TWhisperSettingsForm.DoBackendCUDA(Sender: TObject);
@@ -304,7 +304,7 @@ var
 begin
   FBusy := False;
   btnCPU.Enabled := True;
-  btnVulkan.Enabled := True;
+  btnBLAS.Enabled := True;
   btnCUDA.Enabled := True;
   btnDownloadModel.Enabled := True;
   if not Ok then
@@ -345,7 +345,7 @@ begin
   Dest := IncludeTrailingPathDelimiter(FAppDir) + 'models' + PathDelim + FName;
   FBusy := True;
   btnCPU.Enabled := False;
-  btnVulkan.Enabled := False;
+  btnBLAS.Enabled := False;
   btnCUDA.Enabled := False;
   btnDownloadModel.Enabled := False;
   pb.Position := 0;
@@ -365,7 +365,7 @@ procedure TWhisperSettingsForm.DoneModel(const FileName: string;
 begin
   FBusy := False;
   btnCPU.Enabled := True;
-  btnVulkan.Enabled := True;
+  btnBLAS.Enabled := True;
   btnCUDA.Enabled := True;
   btnDownloadModel.Enabled := True;
   if Ok then
@@ -409,8 +409,9 @@ begin
     lblHelp.AutoSize := False;
     lblHelp.WordWrap := True;
     lblHelp.Caption :=
-      'Локальная расшифровка через whisper.cpp. Полностью офлайн, ' +
-      'после скачивания движка и модели интернет не нужен.';
+      'Локальная расшифровка через whisper.cpp. После скачивания ' +
+      'движка и модели интернет больше не нужен. AMD GPU в готовых ' +
+      'сборках не поддерживается — используйте CPU+BLAS.';
 
     lbl1 := TLabel.Create(F);
     lbl1.Parent := F;
@@ -426,19 +427,19 @@ begin
     F.btnCPU := TButton.Create(F);
     F.btnCPU.Parent := F;
     F.btnCPU.SetBounds(12, 92, 196, 28);
-    F.btnCPU.Caption := 'Скачать CPU-вариант';
+    F.btnCPU.Caption := 'CPU (минимум)';
     F.btnCPU.OnClick := @F.DoBackendCPU;
 
-    F.btnVulkan := TButton.Create(F);
-    F.btnVulkan.Parent := F;
-    F.btnVulkan.SetBounds(218, 92, 196, 28);
-    F.btnVulkan.Caption := 'Vulkan (AMD/NVIDIA/Intel)';
-    F.btnVulkan.OnClick := @F.DoBackendVulkan;
+    F.btnBLAS := TButton.Create(F);
+    F.btnBLAS.Parent := F;
+    F.btnBLAS.SetBounds(218, 92, 196, 28);
+    F.btnBLAS.Caption := 'CPU + BLAS (быстрее)';
+    F.btnBLAS.OnClick := @F.DoBackendBLAS;
 
     F.btnCUDA := TButton.Create(F);
     F.btnCUDA.Parent := F;
     F.btnCUDA.SetBounds(424, 92, 196, 28);
-    F.btnCUDA.Caption := 'CUDA (NVIDIA)';
+    F.btnCUDA.Caption := 'CUDA (NVIDIA GPU)';
     F.btnCUDA.OnClick := @F.DoBackendCUDA;
 
     lbl2 := TLabel.Create(F);
