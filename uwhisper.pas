@@ -25,7 +25,7 @@ type
     ModelBaseUrl: string;
   end;
 
-  TWhisperBackend = (wbNone, wbCPU, wbBLAS, wbCUDA);
+  TWhisperBackend = (wbNone, wbCPU, wbBLAS, wbCUDA, wbVulkan);
 
   TWhisperResult = record
     Ok: Boolean;
@@ -82,6 +82,7 @@ begin
   D := IncludeTrailingPathDelimiter(BackendDir);
   if WhisperCliPath(BackendDir) = '' then Exit(wbNone);
   if FileExists(D + 'ggml-cuda.dll') then Exit(wbCUDA);
+  if FileExists(D + 'ggml-vulkan.dll') then Exit(wbVulkan);
   if FileExists(D + 'openblas.dll') or
      FileExists(D + 'libopenblas.dll') then Exit(wbBLAS);
   Result := wbCPU;
@@ -93,6 +94,7 @@ begin
     wbCPU: Result := 'CPU';
     wbBLAS: Result := 'CPU + BLAS';
     wbCUDA: Result := 'CUDA';
+    wbVulkan: Result := 'Vulkan (пользовательская сборка)';
     else Result := 'не установлен';
   end;
 end;

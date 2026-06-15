@@ -405,13 +405,14 @@ begin
 
     lblHelp := TLabel.Create(F);
     lblHelp.Parent := F;
-    lblHelp.SetBounds(12, 8, 616, 36);
+    lblHelp.SetBounds(12, 8, 616, 50);
     lblHelp.AutoSize := False;
     lblHelp.WordWrap := True;
     lblHelp.Caption :=
       'Локальная расшифровка через whisper.cpp. После скачивания ' +
-      'движка и модели интернет больше не нужен. AMD GPU в готовых ' +
-      'сборках не поддерживается — используйте CPU+BLAS.';
+      'движка и модели интернет больше не нужен. Vulkan для AMD GPU — ' +
+      'положите файлы whisper-cli.exe, whisper.dll, ggml*.dll в папку ' +
+      'whisper рядом с EXE; backend определится автоматически.';
 
     lbl1 := TLabel.Create(F);
     lbl1.Parent := F;
