@@ -2023,8 +2023,7 @@ end;
 
 function WhisperReady(const S: TWhisperSettings): Boolean;
 begin
-  Result := S.Enabled
-    and (WhisperCliPath(S.BackendDir) <> '')
+  Result := (WhisperCliPath(S.BackendDir) <> '')
     and (S.ModelFile <> '')
     and FileExists(ModelPath(S.ModelsDir, S.ModelFile));
 end;

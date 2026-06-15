@@ -140,13 +140,16 @@ procedure TBackendDownloadThread.Execute;
 var
   AssetUrl, AssetName, Err: string;
   DR: TDownloadResult;
+  UseApi: Boolean;
 begin
   FOk := False;
-  // First try GitHub API to find latest asset matching wildcard. If
-  // user overrode the base URL to something non-GitHub, fall back to
-  // BaseUrl + a guess at the filename (only works for CPU/Vulkan with
-  // stable names).
-  if Pos('github.com/ggml-org/whisper.cpp', FBaseUrl) > 0 then
+  // CUDA's asset name embeds a CUDA version (whisper-cublas-12.4.0-bin-
+  // x64.zip), so we have to ask GitHub for the latest asset matching the
+  // wildcard. CPU and Vulkan have stable names — we use the GitHub
+  // /releases/latest/download/<name> redirect URL directly, which is
+  // faster and not subject to GitHub API rate limits.
+  UseApi := Pos('*', FAssetWildcard) > 0;
+  if UseApi then
   begin
     if not GitHubLatestAssetUrl('ggml-org', 'whisper.cpp', FAssetWildcard,
          AssetUrl, AssetName, Err) then
@@ -158,10 +161,8 @@ begin
   end
   else
   begin
-    // Fallback — caller's responsibility to give a working URL
-    AssetUrl := IncludeTrailingPathDelimiter(FBaseUrl) +
-      StringReplace(FAssetWildcard, '*', '', [rfReplaceAll]);
-    AssetName := ExtractFileName(AssetUrl);
+    AssetUrl := IncludeTrailingPathDelimiter(FBaseUrl) + FAssetWildcard;
+    AssetName := FAssetWildcard;
   end;
   FZipPath := IncludeTrailingPathDelimiter(GetTempDir(False)) +
     'timerec_whisper_' + AssetName;
@@ -255,7 +256,11 @@ procedure TWhisperSettingsForm.StartBackendDownload(Kind: TDownloadKind);
 var
   Wildcard, BackendDir: string;
 begin
-  if FBusy then Exit;
+  if FBusy then
+  begin
+    ShowMessage('Уже идёт скачивание, дождитесь завершения.');
+    Exit;
+  end;
   case Kind of
     dkBackendCPU:    Wildcard := 'whisper-bin-x64.zip';
     dkBackendVulkan: Wildcard := 'whisper-vulkan-bin-x64.zip';
@@ -269,7 +274,9 @@ begin
   btnCUDA.Enabled := False;
   btnDownloadModel.Enabled := False;
   pb.Position := 0;
-  lblProgress.Caption := 'Запрашиваю информацию о релизе...';
+  lblProgress.Caption := 'Запрашиваю информацию о релизе ' + Wildcard + ' ...';
+  lblProgress.Update;
+  Application.ProcessMessages;
   TBackendDownloadThread.Create(Self, Kind, Wildcard,
     edDllUrl.Text, BackendDir);
 end;
@@ -303,17 +310,20 @@ begin
   if not Ok then
   begin
     lblProgress.Caption := 'Ошибка: ' + ErrMsg;
+    ShowMessage('Не удалось скачать архив:' + LineEnding + ErrMsg);
     Exit;
   end;
-  lblProgress.Caption := 'Распаковка...';
+  lblProgress.Caption := 'Распаковка архива...';
+  lblProgress.Update;
   Application.ProcessMessages;
   if not UnzipFlat(DestZip, BackendDir, Count, Err) then
   begin
     lblProgress.Caption := 'Ошибка распаковки: ' + Err;
+    ShowMessage('Распаковка не удалась:' + LineEnding + Err);
     Exit;
   end;
-  DeleteFile(DestZip);
-  lblProgress.Caption := 'Готово, распаковано файлов: ' + IntToStr(Count);
+  SysUtils.DeleteFile(DestZip);
+  lblProgress.Caption := 'Готово. Распаковано файлов: ' + IntToStr(Count);
   RefreshStatus;
 end;
 
@@ -361,7 +371,11 @@ begin
   if Ok then
     lblProgress.Caption := 'Модель ' + FileName + ' скачана.'
   else
-    lblProgress.Caption := 'Ошибка модели: ' + ErrMsg;
+  begin
+    lblProgress.Caption := 'Ошибка скачивания модели: ' + ErrMsg;
+    ShowMessage('Не удалось скачать модель ' + FileName + ':' +
+      LineEnding + ErrMsg);
+  end;
 end;
 
 procedure TWhisperSettingsForm.DoModelChange(Sender: TObject);
@@ -478,7 +492,7 @@ begin
     lbl4 := TLabel.Create(F);
     lbl4.Parent := F;
     lbl4.SetBounds(12, 290, 616, 18);
-    lbl4.Caption := '4. Язык и активация';
+    lbl4.Caption := '4. Язык';
     lbl4.Font.Style := [fsBold];
 
     lblLang := TLabel.Create(F);
@@ -492,26 +506,20 @@ begin
     F.edLang.TextHint := 'авто / ru / en';
     F.edLang.Text := S.Language;
 
-    F.chkEnabled := TCheckBox.Create(F);
-    F.chkEnabled.Parent := F;
-    F.chkEnabled.SetBounds(12, 340, 616, 24);
-    F.chkEnabled.Caption := 'Активно — показывать кнопку расшифровки';
-    F.chkEnabled.Checked := S.Enabled;
-
     lblAdv := TLabel.Create(F);
     lblAdv.Parent := F;
-    lblAdv.SetBounds(12, 374, 616, 18);
+    lblAdv.SetBounds(12, 344, 616, 18);
     lblAdv.Caption := 'Дополнительно: адреса для скачивания';
 
     F.edDllUrl := TEdit.Create(F);
     F.edDllUrl.Parent := F;
-    F.edDllUrl.SetBounds(12, 394, 616, 24);
+    F.edDllUrl.SetBounds(12, 364, 616, 24);
     if S.DllBaseUrl <> '' then F.edDllUrl.Text := S.DllBaseUrl
     else F.edDllUrl.Text := DefaultDllBaseUrl;
 
     F.edModelUrl := TEdit.Create(F);
     F.edModelUrl.Parent := F;
-    F.edModelUrl.SetBounds(12, 424, 616, 24);
+    F.edModelUrl.SetBounds(12, 394, 616, 24);
     if S.ModelBaseUrl <> '' then F.edModelUrl.Text := S.ModelBaseUrl
     else F.edModelUrl.Text := DefaultModelBaseUrl;
 
@@ -537,7 +545,7 @@ begin
          (F.cbModel.ItemIndex <= High(KnownModels)) then
         S.ModelFile := KnownModels[F.cbModel.ItemIndex].FileName;
       S.Language := Trim(F.edLang.Text);
-      S.Enabled := F.chkEnabled.Checked;
+      S.Enabled := True;  // always-on now; presence-of-engine gates the UI
       S.DllBaseUrl := Trim(F.edDllUrl.Text);
       S.ModelBaseUrl := Trim(F.edModelUrl.Text);
       Result := True;
