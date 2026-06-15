@@ -2658,6 +2658,9 @@ begin
     // finalized recordings.
     if Trim(cbTask.Text) <> '' then
       RememberPendingAudioTasks(cbTask.Text);
+    // New recording → newest mp3 has no transcript yet → AI button must
+    // flip from 'Aa' back to 'T'.
+    RefreshAIButton;
   except
     on E: Exception do
     begin

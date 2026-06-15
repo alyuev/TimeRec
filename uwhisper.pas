@@ -79,7 +79,7 @@ function ScrubHallucinations(const Text: string): string;
 //     предложения с джанк-подстроками. Строки, начинающиеся с '['
 //     (таймштамп), не режем — иначе временные точки сломаются.
 const
-  Junk: array[0..21] of string = (
+  Junk: array[0..22] of string = (
     'DimaTorzok',
     'Дима Торжок',
     'Субтитры сделал',
@@ -87,6 +87,7 @@ const
     'Субтитры подогнал',
     'Субтитры подготовил',
     'Субтитры от',
+    'Субтитров А.',
     'Редактор субтитров',
     'Корректор А.',
     'Поставьте лайк',
@@ -158,10 +159,11 @@ const
 
 var
   Lines: TStringList;
-  i: Integer;
-  Cleaned, Line: string;
+  i, RBracket: Integer;
+  Cleaned, Line, LastPayload, Payload: string;
 begin
   Result := '';
+  LastPayload := '';
   Lines := TStringList.Create;
   try
     Lines.Text := Text;
@@ -177,6 +179,20 @@ begin
           WhisperLog('  scrub line: "' + Line + '"');
           Continue;
         end;
+        // Dedup: if the text content (without the timestamp bracket)
+        // matches the previous emitted line, drop it. Whisper hallucinates
+        // long runs of identical phrases over trailing silence/music.
+        RBracket := Pos(']', Line);
+        if RBracket > 0 then
+          Payload := LowerCase(Trim(Copy(Line, RBracket + 1, MaxInt)))
+        else
+          Payload := LowerCase(Line);
+        if (Payload <> '') and (Payload = LastPayload) then
+        begin
+          WhisperLog('  dedup line: "' + Line + '"');
+          Continue;
+        end;
+        LastPayload := Payload;
         if Result <> '' then Result := Result + LineEnding;
         Result := Result + Line;
       end
@@ -185,6 +201,13 @@ begin
         Cleaned := ScrubSentences(Line);
         if Cleaned <> '' then
         begin
+          Payload := LowerCase(Trim(Cleaned));
+          if (Payload <> '') and (Payload = LastPayload) then
+          begin
+            WhisperLog('  dedup line: "' + Cleaned + '"');
+            Continue;
+          end;
+          LastPayload := Payload;
           if Result <> '' then Result := Result + LineEnding;
           Result := Result + Cleaned;
         end;
