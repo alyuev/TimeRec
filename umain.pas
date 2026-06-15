@@ -7,7 +7,7 @@ interface
 uses
   Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, ComCtrls, Menus,
   Buttons, Graphics, LCLType, LMessages, Dialogs, Windows, Types, ShellApi,
-  uaudio, uaudiolist;
+  uaudio, uaudiolist, uai;
 
 type
   TMainForm = class(TForm)
@@ -18,6 +18,7 @@ type
     btnSys: TSpeedButton;
     btnRec: TSpeedButton;
     btnVAD: TSpeedButton;
+    btnAI: TSpeedButton;
     btnAudioList: TSpeedButton;
     btnPlay: TSpeedButton;
     cbTask: TComboBox;
@@ -53,6 +54,7 @@ type
     miEditTasks: TMenuItem;
     miLazyCureDir: TMenuItem;
     miHideFromTaskBar: TMenuItem;
+    miAISettings: TMenuItem;
     miTopMost: TMenuItem;
     miOpacity: TMenuItem;
     miSep1: TMenuItem;
@@ -105,6 +107,8 @@ type
     procedure miAudioRateClick(Sender: TObject);
     procedure btnAudioListClick(Sender: TObject);
     procedure btnPlayClick(Sender: TObject);
+    procedure btnAIClick(Sender: TObject);
+    procedure miAISettingsClick(Sender: TObject);
     procedure AudioListHidden(Sender: TObject);
     procedure btnMicDropClick(Sender: TObject);
     procedure MicDropMenuClick(Sender: TObject);
@@ -147,6 +151,9 @@ type
     FAudioSampleRate: Integer;  // Hz
     FAudioRecorder: TAudioRecorder;
     FAudioFilesForSegment: TStringList;
+    FAISettings: TAISettings;
+    FAIBusy: Boolean;
+    FAITargetPath: string;
     FMicFloorCache: TStringList;  // "MicDevice=FloorDb" pairs
     FLastAudioFileSize: Int64;
     FAudioUnchangedTicks: Integer;
@@ -165,6 +172,12 @@ type
     procedure UpdateAudioBtnGlyphs;
     procedure StartRecording;
     procedure StopRecording;
+    procedure AudioListAIRequest(const AudioPath: string);
+    procedure RefreshAIButton;
+    procedure UpdateAIButtonForFile(const Path: string);
+    procedure DoAITranscribeDone(R: TTranscribeResult);
+    procedure LoadAISettings;
+    procedure SaveAISettings;
     procedure UpdateAudioStatus;
     function ResolvedAudioDir: string;
     procedure OpacityTrackChange(Sender: TObject);
@@ -212,7 +225,7 @@ implementation
 
 uses
   LazFileUtils, LCLIntf, DOM, XMLRead, XMLWrite, LazUTF8, FileCtrl,
-  ComObj, ActiveX, ustats, uedit, utaskedit;
+  ComObj, ActiveX, ustats, uedit, utaskedit, uaisettings, uaitext;
 
 const
   // Form's «native» canvas size. FormResize, the borderless drag-
@@ -368,6 +381,10 @@ begin
   btnRec.Hint := 'Запись аудио';
   btnPlay.Hint := 'Проиграть последнюю запись';
   btnAudioList.Hint := 'Список аудио записей';
+  btnAI.ShowHint := True;
+  miAISettings.Caption := 'ИИ-расшифровка...';
+  LoadAISettings;
+  RefreshAIButton;
 
   btnSettings.ShowHint := True;
   btnSettings.Hint := 'Меню настроек';
@@ -1968,6 +1985,207 @@ begin
   ShellExecuteW(0, nil, PWideChar(UnicodeString(Dir + Newest)), nil, nil, 1);
 end;
 
+function FindNewestMp3(const Dir: string): string;
+var
+  SR: TSearchRec;
+  Newest: string;
+  NewestTime, T: TDateTime;
+  D: string;
+begin
+  Result := '';
+  D := IncludeTrailingPathDelimiter(Dir);
+  if not DirectoryExists(D) then Exit;
+  Newest := '';
+  NewestTime := 0;
+  if FindFirst(D + '*.mp3', faAnyFile and not faDirectory, SR) = 0 then
+  try
+    repeat
+      if (SR.Attr and faDirectory) = 0 then
+      begin
+        T := FileDateToDateTime(LongInt(SR.Time));
+        if T > NewestTime then begin NewestTime := T; Newest := SR.Name; end;
+      end;
+    until FindNext(SR) <> 0;
+  finally
+    SysUtils.FindClose(SR);
+  end;
+  if Newest <> '' then Result := D + Newest;
+end;
+
+procedure TMainForm.UpdateAIButtonForFile(const Path: string);
+// Show 📝 (Aa) if transcript exists, T if AI configured & no transcript,
+// hide otherwise. Path is the audio file we're judging.
+var
+  HasTxt: Boolean;
+begin
+  if FAIBusy then
+  begin
+    btnAI.Visible := True;
+    btnAI.Caption := '...';
+    btnAI.Hint := 'Расшифровка выполняется...';
+    Exit;
+  end;
+  if (Path = '') or (not FileExists(Path)) then
+  begin
+    btnAI.Visible := False;
+    Exit;
+  end;
+  HasTxt := FileExists(TranscriptPath(Path));
+  if HasTxt then
+  begin
+    btnAI.Visible := True;
+    btnAI.Caption := 'Aa';
+    btnAI.Hint := 'Показать расшифровку';
+  end
+  else if FAISettings.Enabled and (FAISettings.Endpoint <> '')
+       and (FAISettings.Model <> '') then
+  begin
+    btnAI.Visible := True;
+    btnAI.Caption := 'T';
+    btnAI.Hint := 'Расшифровать запись через ИИ';
+  end
+  else
+    btnAI.Visible := False;
+end;
+
+procedure TMainForm.RefreshAIButton;
+begin
+  UpdateAIButtonForFile(FindNewestMp3(ResolvedAudioDir));
+end;
+
+procedure TMainForm.btnAIClick(Sender: TObject);
+var
+  Path, TxtPath, Body: string;
+  L: TStringList;
+begin
+  Path := FindNewestMp3(ResolvedAudioDir);
+  if Path = '' then begin ShowMessage('Нет записей.'); Exit; end;
+  TxtPath := TranscriptPath(Path);
+  if FileExists(TxtPath) then
+  begin
+    L := TStringList.Create;
+    try
+      L.LoadFromFile(TxtPath);
+      Body := L.Text;
+    finally
+      L.Free;
+    end;
+    ShowTranscript('Расшифровка ' + ExtractFileName(Path), Body);
+    Exit;
+  end;
+  if not FAISettings.Enabled then
+  begin
+    ShowMessage('Подключение к ИИ не активно.');
+    Exit;
+  end;
+  FAIBusy := True;
+  FAITargetPath := Path;
+  RefreshAIButton;
+  TTranscribeThread.Create(FAISettings, Path, @DoAITranscribeDone);
+end;
+
+procedure TMainForm.DoAITranscribeDone(R: TTranscribeResult);
+var
+  L: TStringList;
+begin
+  FAIBusy := False;
+  if not R.Ok then
+  begin
+    FAITargetPath := '';
+    RefreshAIButton;
+    ShowMessage('Ошибка расшифровки: ' + R.ErrorMsg);
+    Exit;
+  end;
+  if FAITargetPath <> '' then
+  begin
+    L := TStringList.Create;
+    try
+      L.Text := R.Text;
+      L.SaveToFile(TranscriptPath(FAITargetPath));
+    finally
+      L.Free;
+    end;
+  end;
+  FAITargetPath := '';
+  RefreshAIButton;
+  if FAudioListForm <> nil then FAudioListForm.RefreshList;
+  ShowTranscript('Расшифровка', R.Text);
+end;
+
+procedure TMainForm.AudioListAIRequest(const AudioPath: string);
+// Audio-list row clicked "T" — start transcription for that specific file.
+begin
+  if FAIBusy then
+  begin
+    ShowMessage('Идёт другая расшифровка, дождитесь её завершения.');
+    Exit;
+  end;
+  if not (FAISettings.Enabled and (FAISettings.Endpoint <> '')
+       and (FAISettings.Model <> '')) then
+  begin
+    ShowMessage('Подключение к ИИ не активно.');
+    Exit;
+  end;
+  FAIBusy := True;
+  FAITargetPath := AudioPath;
+  RefreshAIButton;
+  TTranscribeThread.Create(FAISettings, AudioPath, @DoAITranscribeDone);
+end;
+
+procedure TMainForm.miAISettingsClick(Sender: TObject);
+begin
+  if EditAISettings(FAISettings) then
+  begin
+    SaveAISettings;
+    RefreshAIButton;
+  end;
+end;
+
+procedure TMainForm.LoadAISettings;
+var
+  Cfg: TStringList;
+  FName: string;
+begin
+  FAISettings.Endpoint := '';
+  FAISettings.ApiKey := '';
+  FAISettings.Model := '';
+  FAISettings.Language := '';
+  FAISettings.Enabled := False;
+  FName := AppDir + 'ai.cfg';
+  if not FileExists(FName) then Exit;
+  Cfg := TStringList.Create;
+  try
+    Cfg.LoadFromFile(FName);
+    FAISettings.Endpoint := Cfg.Values['endpoint'];
+    FAISettings.ApiKey := Cfg.Values['apikey'];
+    FAISettings.Model := Cfg.Values['model'];
+    FAISettings.Language := Cfg.Values['language'];
+    FAISettings.Enabled := SameText(Cfg.Values['enabled'], 'true');
+  finally
+    Cfg.Free;
+  end;
+end;
+
+procedure TMainForm.SaveAISettings;
+var
+  Cfg: TStringList;
+begin
+  Cfg := TStringList.Create;
+  try
+    Cfg.Values['endpoint'] := FAISettings.Endpoint;
+    Cfg.Values['apikey'] := FAISettings.ApiKey;
+    Cfg.Values['model'] := FAISettings.Model;
+    Cfg.Values['language'] := FAISettings.Language;
+    if FAISettings.Enabled then
+      Cfg.Values['enabled'] := 'true'
+    else
+      Cfg.Values['enabled'] := 'false';
+    Cfg.SaveToFile(AppDir + 'ai.cfg');
+  finally
+    Cfg.Free;
+  end;
+end;
+
 procedure TMainForm.btnAudioListClick(Sender: TObject);
 begin
   if FAudioListForm = nil then
@@ -1975,7 +2193,10 @@ begin
     FAudioListForm := TAudioListForm.CreateNew(Self);
     FAudioListForm.SetDirs(ResolvedAudioDir, FDataDir);
     FAudioListForm.OnHidden := @AudioListHidden;
+    FAudioListForm.OnAIRequest := @AudioListAIRequest;
   end;
+  FAudioListForm.SetAIEnabled(FAISettings.Enabled
+    and (FAISettings.Endpoint <> '') and (FAISettings.Model <> ''));
   if FAudioListForm.Visible then
   begin
     FAudioListForm.Hide;

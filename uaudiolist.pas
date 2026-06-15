@@ -7,10 +7,12 @@ interface
 uses
   Classes, SysUtils, Forms, Controls, Grids, Graphics, LCLType, LMessages,
   Menus, Dialogs, Windows, ShellApi, Clipbrd, laz2_XMLRead, laz2_XMLWrite,
-  laz2_DOM;
+  laz2_DOM, uaitext;
 
 type
   TRefRewriter = function(const OldName, NewName: string): Integer of object;
+
+  TAIRequestEvent = procedure(const AudioPath: string) of object;
 
   TAudioListForm = class(TForm)
   private
@@ -19,6 +21,8 @@ type
     FDataDir: string;
     FOriginalNames: TStringList;
     FOnHidden: TNotifyEvent;
+    FAIEnabled: Boolean;
+    FOnAIRequest: TAIRequestEvent;
     FPopup: TPopupMenu;
     FPendingPlayPath: string;
     FSortCol: Integer;
@@ -48,7 +52,9 @@ type
     procedure SetDirs(const AudioDir, DataDir: string);
     procedure RefreshList;
     procedure FocusFirstRowForTask(const TaskName: string);
+    procedure SetAIEnabled(Value: Boolean);
     property OnHidden: TNotifyEvent read FOnHidden write FOnHidden;
+    property OnAIRequest: TAIRequestEvent read FOnAIRequest write FOnAIRequest;
   end;
 
 implementation
@@ -70,7 +76,7 @@ begin
   FGrid := TStringGrid.Create(Self);
   FGrid.Parent := Self;
   FGrid.Align := alClient;
-  FGrid.ColCount := 6;
+  FGrid.ColCount := 7;
   FGrid.RowCount := 1;
   FGrid.FixedCols := 0;
   FGrid.FixedRows := 1;
@@ -80,12 +86,14 @@ begin
   FGrid.Cells[3, 0] := 'Размер';
   FGrid.Cells[4, 0] := 'Дата записи';
   FGrid.Cells[5, 0] := 'Задача';
+  FGrid.Cells[6, 0] := 'Расш.';
   FGrid.ColWidths[0] := 28;
   FGrid.ColWidths[1] := 240;
   FGrid.ColWidths[2] := 60;
   FGrid.ColWidths[3] := 80;
   FGrid.ColWidths[4] := 140;
   FGrid.ColWidths[5] := 240;
+  FGrid.ColWidths[6] := 44;
   FGrid.Options := [goVertLine, goHorzLine, goFixedHorzLine, goFixedVertLine,
     goEditing, goRowSelect, goColSizing, goSmoothScroll];
   // Belt-and-suspenders: explicitly strip the options that, on some
@@ -424,6 +432,12 @@ begin
     FGrid.Cells[3, i + 1] := FormatSize(Items[i].Size);
     FGrid.Cells[4, i + 1] := FormatDateTime('yyyy-mm-dd hh:nn:ss', Items[i].Time);
     FGrid.Cells[5, i + 1] := Items[i].Task;
+    if FileExists(ChangeFileExt(FAudioDir + Items[i].Name, '.txt')) then
+      FGrid.Cells[6, i + 1] := 'Aa'
+    else if FAIEnabled then
+      FGrid.Cells[6, i + 1] := 'T'
+    else
+      FGrid.Cells[6, i + 1] := '';
     FOriginalNames.Add(Items[i].Name);
   end;
   UpdateHeaderArrows;
@@ -514,6 +528,22 @@ begin
       Application.QueueAsyncCall(@DoPlayPending, 0);
     end;
   end;
+  if (Col = 6) and (Row >= 1) and (Row < FGrid.RowCount) then
+  begin
+    Path := FAudioDir + FGrid.Cells[1, Row];
+    if FileExists(ChangeFileExt(Path, '.txt')) then
+    begin
+      ShowTranscriptFile(ChangeFileExt(Path, '.txt'));
+      Exit;
+    end;
+    if FAIEnabled and Assigned(FOnAIRequest) then
+      FOnAIRequest(Path);
+  end;
+end;
+
+procedure TAudioListForm.SetAIEnabled(Value: Boolean);
+begin
+  FAIEnabled := Value;
 end;
 
 procedure TAudioListForm.DoPlayPending(Data: PtrInt);
