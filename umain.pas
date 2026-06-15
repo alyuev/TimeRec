@@ -7,7 +7,7 @@ interface
 uses
   Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, ComCtrls, Menus,
   Buttons, Graphics, LCLType, LMessages, Dialogs, Windows, Types, ShellApi,
-  uaudio, uaudiolist, uai;
+  uaudio, uaudiolist, uwhisper;
 
 type
   TMainForm = class(TForm)
@@ -151,7 +151,7 @@ type
     FAudioSampleRate: Integer;  // Hz
     FAudioRecorder: TAudioRecorder;
     FAudioFilesForSegment: TStringList;
-    FAISettings: TAISettings;
+    FAISettings: TWhisperSettings;
     FAIBusy: Boolean;
     FAITargetPath: string;
     FMicFloorCache: TStringList;  // "MicDevice=FloorDb" pairs
@@ -175,7 +175,7 @@ type
     procedure AudioListAIRequest(const AudioPath: string);
     procedure RefreshAIButton;
     procedure UpdateAIButtonForFile(const Path: string);
-    procedure DoAITranscribeDone(R: TTranscribeResult);
+    procedure DoAITranscribeDone(R: TWhisperResult);
     procedure LoadAISettings;
     procedure SaveAISettings;
     procedure UpdateAudioStatus;
@@ -382,7 +382,7 @@ begin
   btnPlay.Hint := 'Проиграть последнюю запись';
   btnAudioList.Hint := 'Список аудио записей';
   btnAI.ShowHint := True;
-  miAISettings.Caption := 'ИИ-расшифровка...';
+  miAISettings.Caption := 'Расшифровка аудио (Whisper)...';
   LoadAISettings;
   RefreshAIButton;
 
@@ -1620,9 +1620,18 @@ begin
     M.Font.Name := 'Consolas';
     M.Font.Height := -13;
     M.Lines.Text :=
-      'TimeRec v4 — лёгкий трекер времени для Windows.' + LineEnding +
+      'TimeRec v5 — лёгкий трекер времени для Windows.' + LineEnding +
       'Сборка: ' + Copy({$I %DATE%}, 9, 2) + '.' + Copy({$I %DATE%}, 6, 2) + '.' +
       Copy({$I %DATE%}, 1, 4) + ' ' + Copy({$I %TIME%}, 1, 5) + LineEnding +
+      LineEnding +
+      'Что нового в v5' + LineEnding +
+      '  • Локальная расшифровка аудио в текст через whisper.cpp.' + LineEnding +
+      '    Меню → «Расшифровка аудио (Whisper)»: скачать движок' + LineEnding +
+      '    (CPU / Vulkan / CUDA) и модель прямо из настроек. Полностью' + LineEnding +
+      '    офлайн, локально, без облаков.' + LineEnding +
+      '  • Кнопка T рядом с ▶: расшифровать последнюю запись.' + LineEnding +
+      '    Если расшифровка уже есть — кнопка превращается в Aa и' + LineEnding +
+      '    открывает текст. В списке аудио — столбец «Расш.».' + LineEnding +
       LineEnding +
       'Что нового в v4' + LineEnding +
       '  • Горячее вкл/выкл микрофона и системного звука во время' + LineEnding +
@@ -2012,9 +2021,17 @@ begin
   if Newest <> '' then Result := D + Newest;
 end;
 
+function WhisperReady(const S: TWhisperSettings): Boolean;
+begin
+  Result := S.Enabled
+    and (WhisperCliPath(S.BackendDir) <> '')
+    and (S.ModelFile <> '')
+    and FileExists(ModelPath(S.ModelsDir, S.ModelFile));
+end;
+
 procedure TMainForm.UpdateAIButtonForFile(const Path: string);
-// Show 📝 (Aa) if transcript exists, T if AI configured & no transcript,
-// hide otherwise. Path is the audio file we're judging.
+// Show "Aa" if transcript exists, "T" if Whisper is ready & no
+// transcript, hide otherwise.
 var
   HasTxt: Boolean;
 begin
@@ -2037,12 +2054,11 @@ begin
     btnAI.Caption := 'Aa';
     btnAI.Hint := 'Показать расшифровку';
   end
-  else if FAISettings.Enabled and (FAISettings.Endpoint <> '')
-       and (FAISettings.Model <> '') then
+  else if WhisperReady(FAISettings) then
   begin
     btnAI.Visible := True;
     btnAI.Caption := 'T';
-    btnAI.Hint := 'Расшифровать запись через ИИ';
+    btnAI.Hint := 'Расшифровать запись (Whisper, локально)';
   end
   else
     btnAI.Visible := False;
@@ -2073,18 +2089,19 @@ begin
     ShowTranscript('Расшифровка ' + ExtractFileName(Path), Body);
     Exit;
   end;
-  if not FAISettings.Enabled then
+  if not WhisperReady(FAISettings) then
   begin
-    ShowMessage('Подключение к ИИ не активно.');
+    ShowMessage('Whisper не готов: нужны движок и модель — настрой их в меню.');
     Exit;
   end;
   FAIBusy := True;
   FAITargetPath := Path;
   RefreshAIButton;
-  TTranscribeThread.Create(FAISettings, Path, @DoAITranscribeDone);
+  TWhisperThread.Create(FAISettings, Path, FAudioRecorder.GetFFmpegPath,
+    @DoAITranscribeDone);
 end;
 
-procedure TMainForm.DoAITranscribeDone(R: TTranscribeResult);
+procedure TMainForm.DoAITranscribeDone(R: TWhisperResult);
 var
   L: TStringList;
 begin
@@ -2120,21 +2137,21 @@ begin
     ShowMessage('Идёт другая расшифровка, дождитесь её завершения.');
     Exit;
   end;
-  if not (FAISettings.Enabled and (FAISettings.Endpoint <> '')
-       and (FAISettings.Model <> '')) then
+  if not WhisperReady(FAISettings) then
   begin
-    ShowMessage('Подключение к ИИ не активно.');
+    ShowMessage('Whisper не готов: нужны движок и модель — настрой их в меню.');
     Exit;
   end;
   FAIBusy := True;
   FAITargetPath := AudioPath;
   RefreshAIButton;
-  TTranscribeThread.Create(FAISettings, AudioPath, @DoAITranscribeDone);
+  TWhisperThread.Create(FAISettings, AudioPath,
+    FAudioRecorder.GetFFmpegPath, @DoAITranscribeDone);
 end;
 
 procedure TMainForm.miAISettingsClick(Sender: TObject);
 begin
-  if EditAISettings(FAISettings) then
+  if EditWhisperSettings(FAISettings, AppDir) then
   begin
     SaveAISettings;
     RefreshAIButton;
@@ -2146,21 +2163,24 @@ var
   Cfg: TStringList;
   FName: string;
 begin
-  FAISettings.Endpoint := '';
-  FAISettings.ApiKey := '';
-  FAISettings.Model := '';
+  FAISettings.BackendDir := IncludeTrailingPathDelimiter(AppDir) + 'whisper';
+  FAISettings.ModelsDir := IncludeTrailingPathDelimiter(AppDir) + 'models';
+  FAISettings.ModelFile := 'ggml-large-v3-turbo-q5_0.bin';
   FAISettings.Language := '';
   FAISettings.Enabled := False;
-  FName := AppDir + 'ai.cfg';
+  FAISettings.DllBaseUrl := '';
+  FAISettings.ModelBaseUrl := '';
+  FName := AppDir + 'whisper.cfg';
   if not FileExists(FName) then Exit;
   Cfg := TStringList.Create;
   try
     Cfg.LoadFromFile(FName);
-    FAISettings.Endpoint := Cfg.Values['endpoint'];
-    FAISettings.ApiKey := Cfg.Values['apikey'];
-    FAISettings.Model := Cfg.Values['model'];
+    if Cfg.Values['model'] <> '' then
+      FAISettings.ModelFile := Cfg.Values['model'];
     FAISettings.Language := Cfg.Values['language'];
     FAISettings.Enabled := SameText(Cfg.Values['enabled'], 'true');
+    FAISettings.DllBaseUrl := Cfg.Values['dllurl'];
+    FAISettings.ModelBaseUrl := Cfg.Values['modelurl'];
   finally
     Cfg.Free;
   end;
@@ -2172,15 +2192,15 @@ var
 begin
   Cfg := TStringList.Create;
   try
-    Cfg.Values['endpoint'] := FAISettings.Endpoint;
-    Cfg.Values['apikey'] := FAISettings.ApiKey;
-    Cfg.Values['model'] := FAISettings.Model;
+    Cfg.Values['model'] := FAISettings.ModelFile;
     Cfg.Values['language'] := FAISettings.Language;
     if FAISettings.Enabled then
       Cfg.Values['enabled'] := 'true'
     else
       Cfg.Values['enabled'] := 'false';
-    Cfg.SaveToFile(AppDir + 'ai.cfg');
+    Cfg.Values['dllurl'] := FAISettings.DllBaseUrl;
+    Cfg.Values['modelurl'] := FAISettings.ModelBaseUrl;
+    Cfg.SaveToFile(AppDir + 'whisper.cfg');
   finally
     Cfg.Free;
   end;
@@ -2195,8 +2215,7 @@ begin
     FAudioListForm.OnHidden := @AudioListHidden;
     FAudioListForm.OnAIRequest := @AudioListAIRequest;
   end;
-  FAudioListForm.SetAIEnabled(FAISettings.Enabled
-    and (FAISettings.Endpoint <> '') and (FAISettings.Model <> ''));
+  FAudioListForm.SetAIEnabled(WhisperReady(FAISettings));
   if FAudioListForm.Visible then
   begin
     FAudioListForm.Hide;

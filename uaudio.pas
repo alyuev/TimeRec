@@ -86,6 +86,7 @@ type
     function CurrentFile: string;
     function ElapsedSec: Int64;
     function FFmpegAvailable: Boolean;
+    function GetFFmpegPath: string;
     function DetectFirstMic: string;
     procedure ListMics(AOut: TStrings);
     // Hot-mute support: when set during recording, the source's samples
@@ -672,6 +673,11 @@ begin
   if (P <> '') and FileExists(P) then Exit(P);
   // 3. Last resort: bare name, let the OS resolve via PATH.
   Result := 'ffmpeg.exe';
+end;
+
+function TAudioRecorder.GetFFmpegPath: string;
+begin
+  Result := FindFFmpeg;
 end;
 
 procedure TAudioRecorder.ListMics(AOut: TStrings);
