@@ -68,6 +68,9 @@ type
     procedure RebuildTaskList;
     procedure UpdateTaskButtons;
     procedure UpdateKindButtons;
+    procedure LoadPrefs;
+    procedure SavePrefs;
+    procedure ApplyPrefs(TextMode, Round5: Boolean);
     procedure LoadKindsMap;
     function TaskKind(const Task: string): string;
     function KindFilterAllows(const Task: string): Boolean;
@@ -246,6 +249,7 @@ begin
       FTaskKinds := TStringList.Create;
       FTaskKinds.CaseSensitive := True;
     end;
+    LoadPrefs;
   end;
   ApplyPresetPeriod;
   Refresh;
@@ -269,18 +273,28 @@ end;
 
 procedure TStatsForm.btnTaskClick(Sender: TObject);
 var
-  Sel: TStringList;
+  Sel, Pre: TStringList;
 begin
   Sel := TStringList.Create;
+  Pre := TStringList.Create;
   try
-    if PickTasks(Self, FAllTasks, FSelectedTasks, Sel) then
+    // Pre-check all tasks if nothing was selected yet — saves the user
+    // from manually ticking everything just to start narrowing down.
+    if FSelectedTasks.Count = 0 then Pre.Assign(FAllTasks)
+    else Pre.Assign(FSelectedTasks);
+    if PickTasks(Self, FAllTasks, Pre, Sel) then
     begin
-      FSelectedTasks.Assign(Sel);
+      // "All checked" semantically equals "no filter" — drop to empty
+      // so the button shows «Все задачи» and Refresh treats it as
+      // unrestricted.
+      if Sel.Count = FAllTasks.Count then FSelectedTasks.Clear
+      else FSelectedTasks.Assign(Sel);
       UpdateTaskButtons;
       Refresh;
     end;
   finally
     Sel.Free;
+    Pre.Free;
   end;
 end;
 
@@ -455,31 +469,79 @@ begin
   Refresh;
 end;
 
-procedure TStatsForm.btnToggleViewClick(Sender: TObject);
+procedure TStatsForm.ApplyPrefs(TextMode, Round5: Boolean);
 begin
-  if mmo.Visible then
-  begin
-    mmo.Visible := False;
-    lv.Visible := True;
-    btnToggleView.Caption := 'Текстом';
-    btnCopy.Visible := False;
-    chkRound5.Visible := False;
-  end
-  else
+  chkRound5.Caption := 'Округлять до 5 мин ↑';
+  chkRound5.Checked := Round5;
+  if TextMode then
   begin
     FillMemo;
     lv.Visible := False;
     mmo.Visible := True;
     btnToggleView.Caption := 'Таблицей';
     btnCopy.Visible := True;
-    chkRound5.Caption := 'Округлять до 5 мин ↑';
     chkRound5.Visible := True;
+  end
+  else
+  begin
+    mmo.Visible := False;
+    lv.Visible := True;
+    btnToggleView.Caption := 'Текстом';
+    btnCopy.Visible := False;
+    chkRound5.Visible := False;
   end;
+end;
+
+procedure TStatsForm.LoadPrefs;
+var
+  L: TStringList;
+  Path: string;
+  TextMode, Round5: Boolean;
+begin
+  TextMode := False;
+  Round5 := False;
+  Path := IncludeTrailingPathDelimiter(FDataDir) + 'stats.cfg';
+  if FileExists(Path) then
+  begin
+    L := TStringList.Create;
+    try
+      L.LoadFromFile(Path);
+      TextMode := SameText(L.Values['mode'], 'text');
+      Round5 := SameText(L.Values['round5'], 'true');
+    finally
+      L.Free;
+    end;
+  end;
+  ApplyPrefs(TextMode, Round5);
+end;
+
+procedure TStatsForm.SavePrefs;
+var
+  L: TStringList;
+begin
+  L := TStringList.Create;
+  try
+    if mmo.Visible then L.Values['mode'] := 'text'
+    else L.Values['mode'] := 'table';
+    if chkRound5.Checked then L.Values['round5'] := 'true'
+    else L.Values['round5'] := 'false';
+    L.SaveToFile(IncludeTrailingPathDelimiter(FDataDir) + 'stats.cfg');
+  except
+    // best-effort persistence
+  end;
+  L.Free;
+end;
+
+procedure TStatsForm.btnToggleViewClick(Sender: TObject);
+begin
+  ApplyPrefs(not mmo.Visible, chkRound5.Checked);
+  SavePrefs;
 end;
 
 procedure TStatsForm.chkRound5Change(Sender: TObject);
 begin
   if mmo.Visible then FillMemo;
+  SavePrefs;
 end;
 
 procedure TStatsForm.btnCopyClick(Sender: TObject);
