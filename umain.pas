@@ -167,10 +167,6 @@ type
     FAudioPausedTotalMs: QWord;  // accumulated paused-time for this recording
     FRecStartTickMs: QWord;      // precise wall-clock at recording start
     FAudioListForm: TAudioListForm;
-    FComboTypedPrefix: string;
-    FComboPrefixValid: Boolean;
-    FLastTypedText: string;    // what the user typed last (captured at filter)
-    FRestoreTimer: TTimer;
     FOrigMouseVanish: BOOL;
     FMouseVanishOverridden: Boolean;
     FMicDevice: string;
@@ -222,11 +218,6 @@ type
     procedure ClearComboSelection(Data: PtrInt);
     procedure DeferredStartFromEnter(Data: PtrInt);
     procedure CloseDropAndStart;
-    procedure TrimComboTail;
-    procedure SnapshotComboTypedPrefix;
-    procedure RestoreComboTypedPrefix;
-    procedure DelayedComboRestore(Data: PtrInt);
-    procedure RestoreTimerTick(Sender: TObject);
     procedure DeferredFocusStart(Data: PtrInt);
   protected
     procedure WndProc(var Message: TLMessage); override;
@@ -555,11 +546,6 @@ var
   GComboEdit: HWND = 0;
   GOldEditWndProc: Pointer = nil;
   GSuppressEditSel: Boolean = False;
-  // Set during WM_CHAR processing in the combobox edit — used to
-  // detect (and suppress) Windows' type-ahead "select the auto-
-  // appended suffix" behavior, which otherwise makes the combo's
-  // Text property return more than the user actually typed.
-  GInComboChar: Boolean = False;
 
 const
   EM_SETSEL_ = $00B1;
@@ -593,38 +579,6 @@ var
   Combo: HWND;
   cur, cnt, newIdx: Integer;
 begin
-  if uMsg = WM_CHAR then
-  begin
-    // Wrap the WM_CHAR so any EM_SETSEL that Windows fires from inside
-    // its type-ahead handler is detected and neutralised below.
-    GInComboChar := True;
-    try
-      Result := CallWindowProc(GOldEditWndProc, h, uMsg, wParam, lParam);
-    finally
-      GInComboChar := False;
-    end;
-    Exit;
-  end;
-  if uMsg = WM_KILLFOCUS then
-  begin
-    // Default WM_KILLFOCUS commits whatever Windows considers the
-    // current edit text (often = typed + auto-completed tail) and
-    // clears the selection — so a post-default Trim can't tell what
-    // was tail. Snapshot the user-typed prefix BEFORE the default
-    // handler runs, then force-restore it afterwards.
-    if MainForm <> nil then MainForm.SnapshotComboTypedPrefix;
-    Result := CallWindowProc(GOldEditWndProc, h, uMsg, wParam, lParam);
-    if MainForm <> nil then MainForm.RestoreComboTypedPrefix;
-    Exit;
-  end;
-  if (uMsg = EM_SETSEL_) and GInComboChar and (wParam <> lParam) then
-  begin
-    // Windows wants to highlight the auto-completed suffix. Collapse
-    // the selection to the cursor at wParam (start of suffix) so the
-    // suffix isn't visually treated as "selected for replacement".
-    Result := CallWindowProc(GOldEditWndProc, h, uMsg, wParam, wParam);
-    Exit;
-  end;
   if uMsg = WM_KEYDOWN then
   begin
     Combo := GetParent(h);
@@ -1287,11 +1241,6 @@ end;
 
 procedure TMainForm.cbTaskSelect(Sender: TObject);
 begin
-  // Debug only — investigation of the "short typed phrase replaced by
-  // longer match when focus leaves the form" bug. Re-enable when the
-  // visual repaint issue is properly fixed.
-  //DbgLog(Format('cbTaskSelect: itemIdx=%d text="%s" lastTyped="%s"',
-  //  [cbTask.ItemIndex, cbTask.Text, FLastTypedText]));
   FJustSelected := True;
   FJustPickedFromList := True;
   // Trigger a delayed deselect (timer runs after Windows finishes its
@@ -1386,204 +1335,24 @@ begin
     btnStartStop.SetFocus;
 end;
 
-procedure TMainForm.SnapshotComboTypedPrefix;
-// We don't actually snapshot here anymore — the canonical "what user
-// typed" lives in FLastTypedText, updated each time the filter runs.
-// Kept as a hook in case we need pre-killfocus state.
-begin
-  FComboPrefixValid := FLastTypedText <> '';
-  // Debug only — see [[cbTaskSelect]] comment above.
-  //DbgLog(Format('snap: lastTyped="%s" full="%s" selStart=%d selLen=%d',
-  //  [FLastTypedText, cbTask.Text, cbTask.SelStart, cbTask.SelLength]));
-end;
-
-procedure TMainForm.RestoreComboTypedPrefix;
-const
-  WM_SETTEXT_ = $000C;
-  EM_SETSEL_  = $00B1;
-  CB_SHOWDROPDOWN_ = $014F;
-  CB_SETCURSEL_    = $014E;
-var
-  W: UnicodeString;
-  L: Integer;
-begin
-  if not FComboPrefixValid then Exit;
-  FComboPrefixValid := False;
-  if not cbTask.HandleAllocated then Exit;
-  // Debug only — see [[cbTaskSelect]] comment above.
-  //DbgLog(Format('restore: cur="%s" -> "%s"',
-  //  [cbTask.Text, FLastTypedText]));
-  W := UnicodeString(FLastTypedText);
-  L := Length(W);
-  FFiltering := True;
-  try
-    // 1. Slam the dropdown shut so nothing else commits.
-    SendMessageW(cbTask.Handle, CB_SHOWDROPDOWN_, 0, 0);
-    // 2. Clear the combo's internal "selected item" state.
-    SendMessageW(cbTask.Handle, CB_SETCURSEL_, DWORD(-1), 0);
-    // 3. Force the typed text into both the combo and its inner edit.
-    SendMessageW(cbTask.Handle, WM_SETTEXT_, 0, LPARAM(PWideChar(W)));
-    if GComboEdit <> 0 then
-    begin
-      SendMessageW(GComboEdit, WM_SETTEXT_, 0, LPARAM(PWideChar(W)));
-      // 4. Collapse any leftover selection to cursor-at-end.
-      SendMessageW(GComboEdit, EM_SETSEL_, L, L);
-    end;
-    if cbTask.Text <> FLastTypedText then cbTask.Text := FLastTypedText;
-    cbTask.ItemIndex := -1;
-    // 5. Force immediate full redraw (incl. all children).
-    RedrawWindow(cbTask.Handle, nil, 0,
-      RDW_INVALIDATE or RDW_UPDATENOW or RDW_ERASE or RDW_FRAME or
-      RDW_ALLCHILDREN);
-  finally
-    FFiltering := False;
-  end;
-  // After WM_KILLFOCUS the combo's parent still processes CBN_SELENDOK
-  // (committing the listbox highlight to the edit). That happens after
-  // we return from EditSubProc. Fire a one-shot timer that runs after
-  // all those messages have been drained and forces the typed text
-  // back into the edit.
-  if FRestoreTimer = nil then
-  begin
-    FRestoreTimer := TTimer.Create(Self);
-    FRestoreTimer.Interval := 250;
-    FRestoreTimer.OnTimer := @RestoreTimerTick;
-  end;
-  FRestoreTimer.Enabled := False;
-  FRestoreTimer.Enabled := True;
-end;
-
-procedure TMainForm.RestoreTimerTick(Sender: TObject);
-const
-  WM_GETTEXT_ = $000D;
-  WM_GETTEXTLENGTH_ = $000E;
-  WM_SETTEXT_ = $000C;
-var
-  EditHwnd: HWND;
-  RealText: UnicodeString;
-  Len: Integer;
-  W: UnicodeString;
-begin
-  FRestoreTimer.Enabled := False;
-  if not cbTask.HandleAllocated then Exit;
-  if FLastTypedText = '' then Exit;
-  EditHwnd := GComboEdit;
-  // Read what's actually displayed in the inner Win32 edit (LCL's
-  // Text property doesn't always match after WinAPI sleight-of-hand).
-  if EditHwnd <> 0 then
-  begin
-    Len := SendMessageW(EditHwnd, WM_GETTEXTLENGTH_, 0, 0);
-    SetLength(RealText, Len);
-    if Len > 0 then
-      SendMessageW(EditHwnd, WM_GETTEXT_, Len + 1, LPARAM(PWideChar(RealText)));
-  end
-  else
-    RealText := UnicodeString(cbTask.Text);
-  // Debug only — see [[cbTaskSelect]] comment above.
-  //DbgLog(Format('timer: lcl="%s" real="%s" want="%s"',
-  //  [cbTask.Text, UTF8Encode(RealText), FLastTypedText]));
-  // Even if text appears correct, force a redraw — visible state may
-  // be stale (the combo box doesn't repaint until full focus loss).
-  W := UnicodeString(FLastTypedText);
-  FFiltering := True;
-  try
-    cbTask.Text := FLastTypedText;
-    if EditHwnd <> 0 then
-      SendMessageW(EditHwnd, WM_SETTEXT_, 0, LPARAM(PWideChar(W)));
-    SendMessageW(cbTask.Handle, WM_SETTEXT_, 0, LPARAM(PWideChar(W)));
-    cbTask.ItemIndex := -1;
-    cbTask.SelStart := Length(FLastTypedText);
-    cbTask.SelLength := 0;
-    InvalidateRect(cbTask.Handle, nil, True);
-    UpdateWindow(cbTask.Handle);
-    if EditHwnd <> 0 then
-    begin
-      InvalidateRect(EditHwnd, nil, True);
-      UpdateWindow(EditHwnd);
-    end;
-  finally
-    FFiltering := False;
-  end;
-end;
-
-procedure TMainForm.DelayedComboRestore(Data: PtrInt);
-begin
-  if cbTask.HandleAllocated and (cbTask.Text <> FLastTypedText)
-     and (FLastTypedText <> '') then
-  begin
-    // Debug only — see [[cbTaskSelect]] comment above.
-    //DbgLog(Format('delayed restore: cur="%s" -> "%s"',
-    //  [cbTask.Text, FLastTypedText]));
-    FFiltering := True;
-    try
-      cbTask.Text := FLastTypedText;
-      cbTask.ItemIndex := -1;
-      cbTask.SelStart := Length(FLastTypedText);
-      cbTask.SelLength := 0;
-    finally
-      FFiltering := False;
-    end;
-  end;
-end;
-
-procedure TMainForm.TrimComboTail;
-// If Windows' type-ahead has appended an auto-completed tail to
-// cbTask.Text (selected portion past SelStart), keep only the
-// user-typed prefix. Idempotent; safe to call anywhere.
-var
-  Typed, Full: string;
-  S0, L0: Integer;
-begin
-  if not cbTask.HandleAllocated then Exit;
-  S0 := cbTask.SelStart;
-  L0 := cbTask.SelLength;
-  if L0 <= 0 then Exit;
-  Full := cbTask.Text;
-  Typed := Copy(Full, 1, S0);
-  if Typed = Full then Exit;
-  FFiltering := True;
-  try
-    cbTask.Text := Typed;
-    cbTask.ItemIndex := -1;
-    cbTask.SelStart := Length(Typed);
-    cbTask.SelLength := 0;
-  finally
-    FFiltering := False;
-  end;
-end;
-
 procedure TMainForm.CloseDropAndStart;
 var
-  Typed, Full: string;
-  S0, L0: Integer;
+  Typed: string;
 begin
-  Full := cbTask.Text;
-  S0 := cbTask.SelStart;
-  L0 := cbTask.SelLength;
-  // Debug only — see [[cbTaskSelect]] comment above.
-  //DbgLog(Format('CloseDropAndStart enter: text="%s" selStart=%d selLen=%d itemIdx=%d',
-  //  [Full, S0, L0, cbTask.ItemIndex]));
-  // Windows ComboBox type-ahead appends a matching listbox item to the
-  // edit and selects the appended tail. Only what's BEFORE the
-  // selection is what the user typed.
-  if L0 > 0 then
-    Typed := Copy(Full, 1, S0)
-  else
-    Typed := Full;
-  DbgLog('  Typed="' + Typed + '"');
+  // Enter without arrow-key navigation: just close the dropdown and keep
+  // the user's typed text. Do NOT trigger "Done" — that would clear the
+  // edit and finish the current task. The user can press the Done button
+  // (or arrow+Enter to pick an existing task) when they actually want to
+  // finish.
+  Typed := cbTask.Text;
   FFiltering := True;
   try
     if cbTask.DroppedDown then cbTask.DroppedDown := False;
-    cbTask.Text := Typed;
+    if cbTask.Text <> Typed then cbTask.Text := Typed;
     cbTask.ItemIndex := -1;
-    cbTask.SelStart := Length(Typed);
-    cbTask.SelLength := 0;
   finally
     FFiltering := False;
   end;
-  // Debug only — see [[cbTaskSelect]] comment above.
-  //DbgLog(Format('CloseDropAndStart exit: text="%s" selStart=%d selLen=%d',
-  //  [cbTask.Text, cbTask.SelStart, cbTask.SelLength]));
 end;
 
 procedure TMainForm.DeferredStartFromEnter(Data: PtrInt);
@@ -1646,7 +1415,6 @@ var
   OldStart, OldLen: Integer;
 begin
   if not FItemsAreFiltered then Exit;
-  FLastTypedText := cbTask.Text;  // remember whatever's there now
   FFiltering := True;
   try
     Filter := cbTask.Text;
@@ -1678,25 +1446,11 @@ var
   i, j, OldStart, OldLen: Integer;
   Tokens: TStringArray;
   NewList: TStringList;
-  cbi: TComboBoxInfo_;
 begin
   FFiltering := True;
   NewList := TStringList.Create;
   try
     Filter := cbTask.Text;
-    // Right after Windows processes WM_CHAR, the auto-completed tail
-    // (if any) is selected with SelStart marking the boundary between
-    // user-typed and auto-appended. Use that to remember the user's
-    // real typing, then strip the tail so the filter matches what the
-    // user actually entered.
-    if cbTask.SelLength > 0 then
-    begin
-      Filter := Copy(Filter, 1, cbTask.SelStart);
-      cbTask.Text := Filter;
-      cbTask.SelStart := Length(Filter);
-      cbTask.SelLength := 0;
-    end;
-    FLastTypedText := Filter;
     LFilter := UTF8LowerCase(Filter);
     SplitTokens(LFilter, Tokens);
     OldStart := cbTask.SelStart;
@@ -1742,15 +1496,6 @@ begin
     begin
       FProgrammaticDrop := True;
       cbTask.DroppedDown := True;
-    end;
-    // Clear the listbox highlight so a WM_KILLFOCUS doesn't commit
-    // some arbitrary item back into the edit when the user clicks
-    // outside the combo without picking anything.
-    if cbTask.HandleAllocated then
-    begin
-      cbi.cbSize := SizeOf(cbi);
-      if GetComboBoxInfoApi(cbTask.Handle, cbi) and (cbi.hwndList <> 0) then
-        SendMessage(cbi.hwndList, LB_SETCURSEL_, $FFFFFFFF, 0);
     end;
     // "Hide pointer while typing" is disabled session-wide in
     // FormCreate (and restored on FormClose), so nothing extra
