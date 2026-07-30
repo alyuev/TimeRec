@@ -5,7 +5,8 @@ unit uedit;
 interface
 
 uses
-  Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, Grids, Dialogs;
+  Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, Grids, Dialogs,
+  LazUTF8;
 
 type
   TEditForm = class(TForm)
@@ -21,6 +22,7 @@ type
     procedure btnDelClick(Sender: TObject);
     procedure btnReloadClick(Sender: TObject);
     procedure btnSaveClick(Sender: TObject);
+    procedure SyncTasksXmlFromGrid;
     procedure cbFileChange(Sender: TObject);
     procedure FormShow(Sender: TObject);
     procedure sgEditingDone(Sender: TObject);
@@ -48,6 +50,62 @@ uses
 const
   IsoFmt  = 'yyyy"-"mm"-"dd"T"hh":"nn":"ss';
   TimeFmt = 'hh:nn:ss';
+
+procedure UpsertTaskName(const TasksFile, TaskName: string);
+// Add or refresh a task entry in data/tasks.xml. If a case-insensitive
+// match already exists, its «name» is updated to the new casing so the
+// dropdown reflects the version the user just typed.
+var
+  Doc: TXMLDocument;
+  Root: TDOMElement;
+  Node: TDOMNode;
+  Cur, LowerNew: string;
+  Found: Boolean;
+begin
+  if Trim(TaskName) = '' then Exit;
+  LowerNew := UTF8LowerCase(TaskName);
+  Doc := nil;
+  Found := False;
+  try
+    if FileExists(TasksFile) then
+    begin
+      ReadXMLFile(Doc, TasksFile);
+      Root := Doc.DocumentElement;
+    end
+    else
+    begin
+      Doc := TXMLDocument.Create;
+      Root := Doc.CreateElement('tasks');
+      Doc.AppendChild(Root);
+    end;
+    Node := Root.FirstChild;
+    while Node <> nil do
+    begin
+      if (Node.NodeName = 'task') and (Node.Attributes <> nil)
+         and (Node.Attributes.GetNamedItem('name') <> nil) then
+      begin
+        Cur := Node.Attributes.GetNamedItem('name').NodeValue;
+        if UTF8LowerCase(Cur) = LowerNew then
+        begin
+          if Cur <> TaskName then
+            TDOMElement(Node).SetAttribute('name', TaskName);
+          Found := True;
+          Break;
+        end;
+      end;
+      Node := Node.NextSibling;
+    end;
+    if not Found then
+    begin
+      Node := Doc.CreateElement('task');
+      TDOMElement(Node).SetAttribute('name', TaskName);
+      Root.AppendChild(Node);
+    end;
+    WriteXMLFile(Doc, TasksFile);
+  finally
+    Doc.Free;
+  end;
+end;
 
 function ParseIso(const S: string; out DT: TDateTime): Boolean;
 var
@@ -321,10 +379,38 @@ begin
       Root.AppendChild(El);
     end;
     WriteXMLFile(Doc, F);
+    // Sync distinct task names into the global tasks.xml so the main
+    // window's dropdown/search sees the fresh names (and picks up any
+    // capitalisation change the user just made).
+    SyncTasksXmlFromGrid;
     LoadCurrentFile;
     ShowMessage('Сохранено: ' + ExtractFileName(F));
   finally
     Doc.Free;
+  end;
+end;
+
+procedure TEditForm.SyncTasksXmlFromGrid;
+var
+  Seen: TStringList;
+  i: Integer;
+  TaskS, TasksFile: string;
+begin
+  TasksFile := IncludeTrailingPathDelimiter(FDataDir) + 'tasks.xml';
+  Seen := TStringList.Create;
+  try
+    Seen.Sorted := True;
+    Seen.Duplicates := dupIgnore;
+    for i := 1 to sg.RowCount - 1 do
+    begin
+      TaskS := Trim(sg.Cells[0, i]);
+      if TaskS = '' then Continue;
+      if Seen.IndexOf(TaskS) >= 0 then Continue;
+      Seen.Add(TaskS);
+      UpsertTaskName(TasksFile, TaskS);
+    end;
+  finally
+    Seen.Free;
   end;
 end;
 

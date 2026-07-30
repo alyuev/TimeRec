@@ -92,11 +92,13 @@ begin
 end;
 
 procedure TTaskPickForm.RebuildList(const Filter: string);
+// Checked items always sit at the top so the user can immediately see
+// what's already selected, especially in long global task lists.
 var
-  i: Integer;
+  i, Pass: Integer;
   LFilter: string;
   Tokens: TStringArray;
-  UseFilter: Boolean;
+  UseFilter, WantChecked: Boolean;
 begin
   LFilter := UTF8LowerCase(Filter);
   UseFilter := UTF8Length(Filter) >= 3;
@@ -105,12 +107,19 @@ begin
   lst.Items.BeginUpdate;
   try
     lst.Items.Clear;
-    for i := 0 to High(FNames) do
-      if (not UseFilter) or MatchesAll(UTF8LowerCase(FNames[i]), Tokens) then
+    // Two passes: first checked items (in original order), then the rest.
+    for Pass := 0 to 1 do
+    begin
+      WantChecked := Pass = 0;
+      for i := 0 to High(FNames) do
       begin
+        if FChecked[i] <> WantChecked then Continue;
+        if UseFilter and not MatchesAll(UTF8LowerCase(FNames[i]), Tokens) then
+          Continue;
         lst.Items.AddObject(FNames[i], TObject(PtrInt(i)));
         lst.Checked[lst.Items.Count - 1] := FChecked[i];
       end;
+    end;
   finally
     lst.Items.EndUpdate;
   end;

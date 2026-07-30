@@ -53,6 +53,9 @@
     </BuildModes>
     <RequiredPackages>
       <Item>
+        <PackageName Value="datetimectrls"/>
+      </Item>
+      <Item>
         <PackageName Value="LCL"/>
       </Item>
     </RequiredPackages>

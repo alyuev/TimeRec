@@ -6,7 +6,7 @@ interface
 
 uses
   Classes, SysUtils, Forms, Controls, StdCtrls, ExtCtrls, ComCtrls,
-  EditBtn, DateUtils;
+  EditBtn, DateUtils, DateTimePicker;
 
 type
   TStatRow = record
@@ -23,11 +23,14 @@ type
     btnTask: TButton;
     btnTaskReset: TButton;
     btnToggleView: TButton;
+    btnTaskExclude: TButton;
+    btnPeriodPrev: TButton;
+    btnPeriodNext: TButton;
     cbPeriod: TComboBox;
     chkKindExclude: TCheckBox;
     chkRound5: TCheckBox;
-    dtFrom: TDateEdit;
-    dtTo: TDateEdit;
+    dtFrom: TDateTimePicker;
+    dtTo: TDateTimePicker;
     lblFrom: TLabel;
     lblKind: TLabel;
     lblPeriod: TLabel;
@@ -41,7 +44,10 @@ type
     procedure btnKindClick(Sender: TObject);
     procedure btnKindResetClick(Sender: TObject);
     procedure btnTaskClick(Sender: TObject);
+    procedure btnTaskExcludeClick(Sender: TObject);
     procedure btnTaskResetClick(Sender: TObject);
+    procedure btnPeriodPrevClick(Sender: TObject);
+    procedure btnPeriodNextClick(Sender: TObject);
     procedure btnToggleViewClick(Sender: TObject);
     procedure cbPeriodChange(Sender: TObject);
     procedure chkKindExcludeChange(Sender: TObject);
@@ -59,6 +65,8 @@ type
     FFirstShow: Boolean;
     FSelectedTasks: TStringList;
     FAllTasks: TStringList;
+    FGlobalTasks: TStringList;  // all tasks ever known (data/tasks.xml)
+    FAlwaysExcludedTasks: TStringList;
     FSelectedKinds: TStringList;
     FAllKinds: TStringList;
     FTaskKinds: TStringList;  // name=kind map from tasks.xml
@@ -230,6 +238,8 @@ begin
 end;
 
 procedure TStatsForm.FormShow(Sender: TObject);
+const
+  Gap = 2;
 begin
   if FFirstShow then
   begin
@@ -241,6 +251,15 @@ begin
     finally
       FInternalChange := False;
     end;
+    // TDateTimePicker draws narrower than its LFM Width — reposition
+    // «до:» and neighbours based on the actual rendered right edge.
+    lblTo.Left           := dtFrom.Left + dtFrom.Width + Gap;
+    dtTo.Left            := lblTo.Left + lblTo.Width + Gap;
+    btnPeriodNext.Left   := dtTo.Left + dtTo.Width + Gap;
+    lblTask.Left         := btnPeriodNext.Left + btnPeriodNext.Width + 6;
+    btnTask.Left         := lblTask.Left + lblTask.Width + Gap;
+    btnTaskReset.Left    := pnlTop.ClientWidth - btnTaskReset.Width - 4;
+    btnTask.Width        := btnTaskReset.Left - btnTask.Left - Gap;
     if FSelectedTasks = nil then FSelectedTasks := TStringList.Create;
     if FAllTasks      = nil then FAllTasks      := TStringList.Create;
     if FSelectedKinds = nil then FSelectedKinds := TStringList.Create;
@@ -249,6 +268,13 @@ begin
       FTaskKinds := TStringList.Create;
       FTaskKinds.CaseSensitive := True;
     end;
+    if FAlwaysExcludedTasks = nil then
+      FAlwaysExcludedTasks := TStringList.Create;
+    if FGlobalTasks = nil then
+      FGlobalTasks := TStringList.Create;
+    // Migration inside LoadPrefs cross-checks salvaged excluded tasks
+    // against FGlobalTasks, so populate the global list first.
+    LoadKindsMap;
     LoadPrefs;
   end;
   ApplyPresetPeriod;
@@ -271,30 +297,202 @@ begin
   btnTaskReset.Enabled := (FSelectedTasks <> nil) and (FSelectedTasks.Count > 0);
 end;
 
+function SameSelection(A, B: TStringList): Boolean;
+// Set equality — ignoring order.
+var
+  i: Integer;
+begin
+  Result := False;
+  if A.Count <> B.Count then Exit;
+  for i := 0 to A.Count - 1 do
+    if B.IndexOf(A[i]) < 0 then Exit;
+  Result := True;
+end;
+
 procedure TStatsForm.btnTaskClick(Sender: TObject);
 var
   Sel, Pre: TStringList;
+  i: Integer;
+  NonExcludedCount: Integer;
 begin
   Sel := TStringList.Create;
   Pre := TStringList.Create;
   try
-    // Pre-check all tasks if nothing was selected yet — saves the user
-    // from manually ticking everything just to start narrowing down.
-    if FSelectedTasks.Count = 0 then Pre.Assign(FAllTasks)
-    else Pre.Assign(FSelectedTasks);
+    // Pre-check all tasks EXCEPT always-excluded ones when nothing was
+    // selected yet. If the user manually ticks an excluded task in the
+    // picker, it stays ticked (we don't override their choice).
+    if FSelectedTasks.Count = 0 then
+    begin
+      for i := 0 to FAllTasks.Count - 1 do
+        if FAlwaysExcludedTasks.IndexOf(FAllTasks[i]) < 0 then
+          Pre.Add(FAllTasks[i]);
+    end
+    else
+      Pre.Assign(FSelectedTasks);
     if PickTasks(Self, FAllTasks, Pre, Sel) then
     begin
-      // "All checked" semantically equals "no filter" — drop to empty
-      // so the button shows «Все задачи» and Refresh treats it as
-      // unrestricted.
-      if Sel.Count = FAllTasks.Count then FSelectedTasks.Clear
-      else FSelectedTasks.Assign(Sel);
+      // "All non-excluded checked, and nothing excluded is checked" =
+      // the default preselection = treat as no filter. That way the
+      // button shows «Все задачи» and Refresh runs unrestricted (but
+      // the always-excluded list still hides those from stats).
+      NonExcludedCount := 0;
+      for i := 0 to FAllTasks.Count - 1 do
+        if FAlwaysExcludedTasks.IndexOf(FAllTasks[i]) < 0 then
+          Inc(NonExcludedCount);
+      if (Sel.Count = NonExcludedCount) and
+         SameSelection(Sel, Pre) then
+        FSelectedTasks.Clear
+      else
+        FSelectedTasks.Assign(Sel);
       UpdateTaskButtons;
       Refresh;
     end;
   finally
     Sel.Free;
     Pre.Free;
+  end;
+end;
+
+function QuarterStart(D: TDateTime): TDateTime;
+var
+  Y, M, Dm: Word;
+begin
+  DecodeDate(D, Y, M, Dm);
+  M := ((M - 1) div 3) * 3 + 1;  // 1, 4, 7 or 10
+  Result := EncodeDate(Y, M, 1);
+end;
+
+function QuarterEnd(D: TDateTime): TDateTime;
+begin
+  Result := EndOfTheMonth(IncMonth(QuarterStart(D), 2));
+end;
+
+procedure ShiftPeriod(var AFrom, ATo: TDateTime; Forward: Boolean);
+// If the current range exactly covers a natural calendar unit (month,
+// quarter or year), snap to the previous/next such unit — real months
+// have different lengths and a plain day-count shift is wrong then.
+// Otherwise fall back to a day-preserving shift.
+var
+  Len: Integer;
+  Anchor: TDateTime;
+
+  function IsSameDay(A, B: TDateTime): Boolean;
+  begin
+    Result := Trunc(A) = Trunc(B);
+  end;
+
+begin
+  // Whole calendar year?
+  if IsSameDay(AFrom, StartOfTheYear(AFrom)) and
+     IsSameDay(ATo, EndOfTheYear(AFrom)) then
+  begin
+    if Forward then Anchor := IncYear(AFrom, 1)
+    else            Anchor := IncYear(AFrom, -1);
+    AFrom := StartOfTheYear(Anchor);
+    ATo := EndOfTheYear(Anchor);
+    Exit;
+  end;
+  // Whole calendar quarter?
+  if IsSameDay(AFrom, QuarterStart(AFrom)) and
+     IsSameDay(ATo, QuarterEnd(AFrom)) then
+  begin
+    if Forward then Anchor := IncMonth(AFrom, 3)
+    else            Anchor := IncMonth(AFrom, -3);
+    AFrom := QuarterStart(Anchor);
+    ATo := QuarterEnd(Anchor);
+    Exit;
+  end;
+  // Whole calendar month?
+  if IsSameDay(AFrom, StartOfTheMonth(AFrom)) and
+     IsSameDay(ATo, EndOfTheMonth(AFrom)) then
+  begin
+    if Forward then Anchor := IncMonth(AFrom, 1)
+    else            Anchor := IncMonth(AFrom, -1);
+    AFrom := StartOfTheMonth(Anchor);
+    ATo := EndOfTheMonth(Anchor);
+    Exit;
+  end;
+  // Fall-through: preserve day count.
+  Len := Trunc(ATo) - Trunc(AFrom) + 1;
+  if Len < 1 then Len := 1;
+  if Forward then
+  begin
+    AFrom := ATo + 1;
+    ATo := AFrom + Len - 1;
+  end
+  else
+  begin
+    ATo := AFrom - 1;
+    AFrom := ATo - Len + 1;
+  end;
+end;
+
+procedure TStatsForm.btnPeriodPrevClick(Sender: TObject);
+var
+  F, T: TDateTime;
+begin
+  F := dtFrom.Date;
+  T := dtTo.Date;
+  ShiftPeriod(F, T, False);
+  FInternalChange := True;
+  try
+    dtFrom.Date := F;
+    dtTo.Date := T;
+    cbPeriod.ItemIndex := 4;  // «Произвольный» — don't let it reset
+  finally
+    FInternalChange := False;
+  end;
+  Refresh;
+end;
+
+procedure TStatsForm.btnPeriodNextClick(Sender: TObject);
+var
+  F, T: TDateTime;
+begin
+  F := dtFrom.Date;
+  T := dtTo.Date;
+  ShiftPeriod(F, T, True);
+  FInternalChange := True;
+  try
+    dtFrom.Date := F;
+    dtTo.Date := T;
+    cbPeriod.ItemIndex := 4;
+  finally
+    FInternalChange := False;
+  end;
+  Refresh;
+end;
+
+procedure TStatsForm.btnTaskExcludeClick(Sender: TObject);
+var
+  Sel, Src: TStringList;
+  i: Integer;
+begin
+  Sel := TStringList.Create;
+  Src := TStringList.Create;
+  try
+    // Global source: every task ever registered in data/tasks.xml.
+    // Make sure any task the user already marked as «always excluded»
+    // is present too — a task may sit in the exclusion list without
+    // being in the current global list (e.g. tasks.xml pruned).
+    if FGlobalTasks <> nil then Src.Assign(FGlobalTasks);
+    for i := 0 to FAlwaysExcludedTasks.Count - 1 do
+      if Src.IndexOf(FAlwaysExcludedTasks[i]) < 0 then
+        Src.Add(FAlwaysExcludedTasks[i]);
+    Src.Sort;
+    // In the picker, «checked» here means «always excluded from stats
+    // by default». Same UI, different semantics — we use it to
+    // configure a persistent blacklist.
+    if PickTasks(Self, Src, FAlwaysExcludedTasks, Sel) then
+    begin
+      FAlwaysExcludedTasks.Assign(Sel);
+      SavePrefs;
+      // Force a fresh recompute using the new exclusion list.
+      if FSelectedTasks.Count = 0 then Refresh;
+    end;
+  finally
+    Sel.Free;
+    Src.Free;
   end;
 end;
 
@@ -359,6 +557,8 @@ var
 begin
   FTaskKinds.Clear;
   FAllKinds.Clear;
+  if FGlobalTasks = nil then FGlobalTasks := TStringList.Create;
+  FGlobalTasks.Clear;
   if (FTasksFile = '') or (not FileExists(FTasksFile)) then Exit;
   Doc := nil;
   try
@@ -376,7 +576,11 @@ begin
           else
             Kind := '';
           if TaskNm <> '' then
+          begin
             FTaskKinds.Values[TaskNm] := Kind;
+            if FGlobalTasks.IndexOf(TaskNm) < 0 then
+              FGlobalTasks.Add(TaskNm);
+          end;
           if (Kind <> '') and (FAllKinds.IndexOf(Kind) < 0) then
             FAllKinds.Add(Kind);
         end;
@@ -493,6 +697,68 @@ begin
 end;
 
 procedure TStatsForm.LoadPrefs;
+
+  procedure LoadExcluded;
+  var
+    Path, LegacyRaw, Piece: string;
+    Excl, L: TStringList;
+    i, p: Integer;
+  begin
+    FAlwaysExcludedTasks.Clear;
+    // Preferred: one task per line in stats_excluded.txt. No escaping,
+    // no ambiguity even when task names contain commas or quotes.
+    Path := IncludeTrailingPathDelimiter(FDataDir) + 'stats_excluded.txt';
+    if FileExists(Path) then
+    begin
+      Excl := TStringList.Create;
+      try
+        Excl.LoadFromFile(Path);
+        for i := 0 to Excl.Count - 1 do
+        begin
+          Piece := Trim(Excl[i]);
+          if Piece <> '' then FAlwaysExcludedTasks.Add(Piece);
+        end;
+      finally
+        Excl.Free;
+      end;
+      Exit;
+    end;
+    // Migration: try to salvage the legacy DelimitedText field from
+    // stats.cfg. Its own format was fragile; task names with commas
+    // could round-trip as a single glued string. Split on commas and
+    // keep only pieces that match a known global task.
+    Path := IncludeTrailingPathDelimiter(FDataDir) + 'stats.cfg';
+    if not FileExists(Path) then Exit;
+    L := TStringList.Create;
+    try
+      L.LoadFromFile(Path);
+      LegacyRaw := L.Values['excluded_tasks'];
+      if LegacyRaw = '' then Exit;
+      // Strip enclosing quotes and un-escape doubled quotes.
+      if (Length(LegacyRaw) >= 2) and (LegacyRaw[1] = '"')
+         and (LegacyRaw[Length(LegacyRaw)] = '"') then
+        LegacyRaw := Copy(LegacyRaw, 2, Length(LegacyRaw) - 2);
+      LegacyRaw := StringReplace(LegacyRaw, '""', '"', [rfReplaceAll]);
+      // Split on TAB (our TSV separator) and comma (legacy CSV).
+      LegacyRaw := StringReplace(LegacyRaw, #9, ',', [rfReplaceAll]);
+      while LegacyRaw <> '' do
+      begin
+        p := Pos(',', LegacyRaw);
+        if p = 0 then begin Piece := LegacyRaw; LegacyRaw := ''; end
+        else begin Piece := Copy(LegacyRaw, 1, p - 1);
+          LegacyRaw := Copy(LegacyRaw, p + 1, MaxInt); end;
+        Piece := Trim(Piece);
+        if Piece = '' then Continue;
+        // Only accept pieces that are real known tasks.
+        if (FGlobalTasks <> nil) and (FGlobalTasks.IndexOf(Piece) >= 0) then
+          if FAlwaysExcludedTasks.IndexOf(Piece) < 0 then
+            FAlwaysExcludedTasks.Add(Piece);
+      end;
+    finally
+      L.Free;
+    end;
+  end;
+
 var
   L: TStringList;
   Path: string;
@@ -512,12 +778,14 @@ begin
       L.Free;
     end;
   end;
+  LoadExcluded;
   ApplyPrefs(TextMode, Round5);
 end;
 
 procedure TStatsForm.SavePrefs;
 var
-  L: TStringList;
+  L, Excl: TStringList;
+  i: Integer;
 begin
   L := TStringList.Create;
   try
@@ -527,9 +795,20 @@ begin
     else L.Values['round5'] := 'false';
     L.SaveToFile(IncludeTrailingPathDelimiter(FDataDir) + 'stats.cfg');
   except
-    // best-effort persistence
   end;
   L.Free;
+  // Excluded list is stored separately, one task per line, no escaping.
+  Excl := TStringList.Create;
+  try
+    if FAlwaysExcludedTasks <> nil then
+      for i := 0 to FAlwaysExcludedTasks.Count - 1 do
+        if Trim(FAlwaysExcludedTasks[i]) <> '' then
+          Excl.Add(FAlwaysExcludedTasks[i]);
+    Excl.SaveToFile(
+      IncludeTrailingPathDelimiter(FDataDir) + 'stats_excluded.txt');
+  except
+  end;
+  Excl.Free;
 end;
 
 procedure TStatsForm.btnToggleViewClick(Sender: TObject);
@@ -920,6 +1199,13 @@ begin
     for i := 0 to High(FRows) do
     begin
       if (FSelectedTasks.Count > 0) and (FSelectedTasks.IndexOf(FRows[i].Key) < 0) then
+        Continue;
+      // When there's no explicit selection, honour the always-excluded
+      // blacklist. If the user did make an explicit selection, we
+      // respect that verbatim (they may have re-picked an excluded
+      // task on purpose).
+      if (FSelectedTasks.Count = 0) and (FAlwaysExcludedTasks <> nil) and
+         (FAlwaysExcludedTasks.IndexOf(FRows[i].Key) >= 0) then
         Continue;
       if not KindFilterAllows(FRows[i].Key) then Continue;
       SetLength(KeepIdx, Length(KeepIdx) + 1);

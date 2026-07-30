@@ -86,6 +86,7 @@ type
     procedure FormShow(Sender: TObject);
     procedure miEditClick(Sender: TObject);
     procedure miEditTasksClick(Sender: TObject);
+    procedure EditFormHidden(Sender: TObject);
     procedure miAboutClick(Sender: TObject);
     procedure miExitClick(Sender: TObject);
     procedure miHideFromTaskBarClick(Sender: TObject);
@@ -1847,17 +1848,31 @@ begin
   StatsForm.ShowFor(FDataDir, ResolvedLazyCureDir, FTasksFile);
 end;
 
+procedure TMainForm.EditFormHidden(Sender: TObject);
+begin
+  // The user may have added / renamed / deleted tasks in the events
+  // editor; refresh cbTask so the new tasks show up in the dropdown
+  // and search without needing a program restart.
+  LoadTaskHistory;
+end;
+
 procedure TMainForm.miEditClick(Sender: TObject);
 begin
   if EditForm = nil then
+  begin
     EditForm := TEditForm.Create(Application);
+    EditForm.OnHide := @EditFormHidden;
+  end;
   EditForm.ShowFor(FDataDir);
 end;
 
 procedure TMainForm.miEditTasksClick(Sender: TObject);
 begin
   if TasksEditForm = nil then
+  begin
     TasksEditForm := TTasksEditForm.Create(Application);
+    TasksEditForm.OnHide := @EditFormHidden;
+  end;
   TasksEditForm.ShowFor(FTasksFile);
 end;
 

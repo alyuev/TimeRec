@@ -45,62 +45,80 @@ object StatsForm: TStatsForm
       Text = #1057#1077#1075#1086#1076#1085#1103
       OnChange = cbPeriodChange
     end
-    object lblFrom: TLabel
+    object btnPeriodPrev: TButton
       Left = 175
+      Top = 7
+      Width = 22
+      Height = 24
+      Caption = #9664
+      TabOrder = 11
+      OnClick = btnPeriodPrevClick
+    end
+    object lblFrom: TLabel
+      Left = 199
       Top = 12
       Width = 18
       Height = 13
       Caption = #1086#1090':'
     end
-    object dtFrom: TDateEdit
-      Left = 195
+    object dtFrom: TDateTimePicker
+      Left = 219
       Top = 8
-      Width = 105
+      Width = 82
       Height = 22
-      DateOrder = doDMY
-      ButtonWidth = 23
-      NumGlyphs = 1
-      MaxLength = 0
+      Date = 46248
+      MaxDate = 2958465
+      MinDate = -53780
+      Kind = dtkDate
       TabOrder = 1
       OnChange = dtFromChange
     end
     object lblTo: TLabel
-      Left = 306
+      Left = 303
       Top = 12
       Width = 18
       Height = 13
       Caption = #1076#1086':'
     end
-    object dtTo: TDateEdit
-      Left = 326
+    object dtTo: TDateTimePicker
+      Left = 323
       Top = 8
-      Width = 105
+      Width = 82
       Height = 22
-      DateOrder = doDMY
-      ButtonWidth = 23
-      NumGlyphs = 1
-      MaxLength = 0
+      Date = 46248
+      MaxDate = 2958465
+      MinDate = -53780
+      Kind = dtkDate
       TabOrder = 2
       OnChange = dtToChange
     end
+    object btnPeriodNext: TButton
+      Left = 407
+      Top = 7
+      Width = 22
+      Height = 24
+      Caption = #9654
+      TabOrder = 12
+      OnClick = btnPeriodNextClick
+    end
     object lblTask: TLabel
-      Left = 440
+      Left = 435
       Top = 12
       Width = 42
       Height = 13
       Caption = #1047#1072#1076#1072#1095#1072':'
     end
     object btnTask: TButton
-      Left = 487
+      Left = 479
       Top = 7
-      Width = 194
+      Width = 200
       Height = 24
       Caption = #1042#1089#1077' '#1079#1072#1076#1072#1095#1080
       TabOrder = 3
       OnClick = btnTaskClick
     end
     object btnTaskReset: TButton
-      Left = 683
+      Left = 685
       Top = 7
       Width = 29
       Height = 24
@@ -143,6 +161,15 @@ object StatsForm: TStatsForm
       Caption = #1080#1089#1082#1083#1102#1095#1080#1090#1100
       TabOrder = 7
       OnChange = chkKindExcludeChange
+    end
+    object btnTaskExclude: TButton
+      Left = 410
+      Top = 38
+      Width = 260
+      Height = 24
+      Caption = #1042#1089#1077#1075#1076#1072' '#1080#1089#1082#1083#1102#1095#1072#1090#1100' '#1079#1072#1076#1072#1095#1080'...'
+      TabOrder = 10
+      OnClick = btnTaskExcludeClick
     end
     object lblTotal: TLabel
       Left = 8
