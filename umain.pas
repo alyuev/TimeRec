@@ -1451,43 +1451,88 @@ begin
   FFiltering := True;
   NewList := TStringList.Create;
   try
-    Filter := cbTask.Text;
-    LFilter := UTF8LowerCase(Filter);
+    Filter := cbTask.Text;             // keep spaces / trailing chars intact
+    LFilter := UTF8LowerCase(Trim(Filter));
     SplitTokens(LFilter, Tokens);
     OldStart := cbTask.SelStart;
     OldLen := cbTask.SelLength;
-    for i := 0 to FAllTasks.Count - 1 do
+    // Reserve slot 0 for the raw typed text — user can pick it verbatim.
+    // Skip it if the input is empty (nothing to type-add) or duplicates
+    // an existing task exactly (case-insensitive).
+    if (Trim(Filter) <> '') then
     begin
-      S := FAllTasks[i];
-      if TokensMatch(UTF8LowerCase(S), Tokens) then
-        NewList.Add(S);
-    end;
-    cbTask.Items.BeginUpdate;
-    try
-      i := 0;
-      while i < NewList.Count do
+      for i := 0 to FAllTasks.Count - 1 do
       begin
-        if i >= cbTask.Items.Count then
-          cbTask.Items.Add(NewList[i])
-        else if cbTask.Items[i] = NewList[i] then
-          // keep
-        else
-        begin
-          // Look ahead: does the current item appear later in the new
-          // list? If so insert before it. Otherwise drop it.
-          j := NewList.IndexOf(cbTask.Items[i]);
-          if (j > i) then
-            cbTask.Items.Insert(i, NewList[i])
-          else
-            cbTask.Items.Delete(i);
-          Continue;
-        end;
-        Inc(i);
+        S := FAllTasks[i];
+        if UTF8LowerCase(S) = LFilter then Continue;  // shown at [0] already
+        if TokensMatch(UTF8LowerCase(S), Tokens) then
+          NewList.Add(S);
       end;
-      while cbTask.Items.Count > NewList.Count do
-        cbTask.Items.Delete(cbTask.Items.Count - 1);
-    finally
-      cbTask.Items.EndUpdate;
+      cbTask.Items.BeginUpdate;
+      try
+        // Slot 0 stays present, just updated in place — this avoids the
+        // dropdown-flicker when Insert/Delete would fire on every char.
+        if cbTask.Items.Count = 0 then cbTask.Items.Add(Filter)
+        else if cbTask.Items[0] <> Filter then cbTask.Items[0] := Filter;
+        // Diff-update slots [1..] against NewList.
+        i := 0;
+        while i < NewList.Count do
+        begin
+          if (i + 1) >= cbTask.Items.Count then
+            cbTask.Items.Add(NewList[i])
+          else if cbTask.Items[i + 1] = NewList[i] then
+          begin
+            Inc(i); Continue;
+          end
+          else
+          begin
+            j := NewList.IndexOf(cbTask.Items[i + 1]);
+            if (j > i) then
+              cbTask.Items.Insert(i + 1, NewList[i])
+            else
+              cbTask.Items.Delete(i + 1);
+            Continue;
+          end;
+          Inc(i);
+        end;
+        while cbTask.Items.Count > NewList.Count + 1 do
+          cbTask.Items.Delete(cbTask.Items.Count - 1);
+      finally
+        cbTask.Items.EndUpdate;
+      end;
+    end
+    else
+    begin
+      // No typed text — plain filter (currently means «show all»).
+      for i := 0 to FAllTasks.Count - 1 do
+        NewList.Add(FAllTasks[i]);
+      cbTask.Items.BeginUpdate;
+      try
+        i := 0;
+        while i < NewList.Count do
+        begin
+          if i >= cbTask.Items.Count then
+            cbTask.Items.Add(NewList[i])
+          else if cbTask.Items[i] = NewList[i] then
+          begin
+            Inc(i); Continue;
+          end
+          else
+          begin
+            j := NewList.IndexOf(cbTask.Items[i]);
+            if (j > i) then
+              cbTask.Items.Insert(i, NewList[i])
+            else
+              cbTask.Items.Delete(i);
+            Continue;
+          end;
+          Inc(i);
+        end;
+        while cbTask.Items.Count > NewList.Count do
+          cbTask.Items.Delete(cbTask.Items.Count - 1);
+      finally
+        cbTask.Items.EndUpdate;
+      end;
     end;
     FItemsAreFiltered := True;
     cbTask.Text := Filter;
